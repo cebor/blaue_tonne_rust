@@ -9,6 +9,8 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use chrono::NaiveDate;
 use reqwest::Client;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use config::Plan;
 
@@ -39,11 +41,37 @@ impl AppState {
 }
 
 // ---------------------------------------------------------------------------
+// OpenAPI spec
+// ---------------------------------------------------------------------------
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        handlers::health_check,
+        handlers::lk_rosenheim_handler,
+    ),
+    components(
+        schemas(
+            handlers::HealthResponse,
+            handlers::ErrorDetail,
+            handlers::DistrictQuery,
+        )
+    ),
+    info(
+        title = "Blaue Tonne API",
+        version = "0.1.0",
+        description = "Altpapier (Blaue Tonne) collection dates for Landkreis Rosenheim"
+    )
+)]
+pub struct ApiDoc;
+
+// ---------------------------------------------------------------------------
 // Router builder (public for integration tests)
 // ---------------------------------------------------------------------------
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
+        .merge(SwaggerUi::new("/docs").url("/api-doc/openapi.json", ApiDoc::openapi()))
         .route("/health", get(handlers::health_check))
         .route("/lk_rosenheim", get(handlers::lk_rosenheim_handler))
         .with_state(state)
@@ -64,19 +92,40 @@ pub mod handlers {
     use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
     use dashmap::DashMap;
     use reqwest::Client;
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
     use serde_json::json;
 
     use super::AppState;
     use crate::errors::AppError;
     use crate::pdf_parser::get_dates;
 
+    /// Successful response from the health endpoint
+    #[derive(Serialize, utoipa::ToSchema)]
+    pub struct HealthResponse {
+        pub status: String,
+    }
+
+    /// Error response body returned on 4xx/5xx
+    #[derive(Serialize, utoipa::ToSchema)]
+    pub struct ErrorDetail {
+        pub detail: String,
+    }
+
+    #[utoipa::path(
+        get,
+        path = "/health",
+        responses(
+            (status = 200, description = "Service is healthy", body = HealthResponse)
+        ),
+        tag = "health"
+    )]
     pub async fn health_check() -> impl IntoResponse {
         Json(json!({ "status": "healthy" }))
     }
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, utoipa::ToSchema)]
     pub struct DistrictQuery {
+        /// Name of the district (Gemeinde), e.g. "Bad Aibling"
         pub district: String,
     }
 
@@ -147,6 +196,20 @@ pub mod handlers {
             .collect()
     }
 
+    #[utoipa::path(
+        get,
+        path = "/lk_rosenheim",
+        params(
+            ("district" = String, Query, description = "Name of the district (Gemeinde), e.g. \"Bad Aibling\"")
+        ),
+        responses(
+            (status = 200, description = "Collection dates in RFC 3339 UTC format", body = Vec<String>),
+            (status = 400, description = "Bad request (invalid URL or parameter)", body = ErrorDetail),
+            (status = 404, description = "District not found", body = ErrorDetail),
+            (status = 504, description = "PDF service unavailable (timeout)", body = ErrorDetail),
+        ),
+        tag = "dates"
+    )]
     pub async fn lk_rosenheim_handler(
         State(state): State<AppState>,
         Query(params): Query<DistrictQuery>,
