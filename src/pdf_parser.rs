@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use pdf_extract::{output_doc_page, Document, MediaBox, OutputDev, OutputError};
+use pdf_extract::{Document, MediaBox, OutputDev, OutputError, output_doc_page};
 
 use crate::errors::AppError;
 
@@ -91,7 +91,11 @@ fn reconstruct_rows(mut chars: Vec<CharEntry>) -> Vec<Vec<String>> {
     }
 
     // Sort by Y descending (top of page first), then X ascending within same Y
-    chars.sort_by(|a, b| b.y.partial_cmp(&a.y).unwrap().then(a.x.partial_cmp(&b.x).unwrap()));
+    chars.sort_by(|a, b| {
+        b.y.partial_cmp(&a.y)
+            .unwrap()
+            .then(a.x.partial_cmp(&b.x).unwrap())
+    });
 
     let mut rows: Vec<Vec<CharEntry>> = Vec::new();
     let mut current_row: Vec<CharEntry> = Vec::new();
@@ -128,14 +132,14 @@ fn split_into_cells(row: Vec<CharEntry>) -> Vec<String> {
     let mut prev_x: Option<f64> = None;
 
     for ch in row {
-        if let Some(px) = prev_x {
-            if ch.x - px > CELL_X_GAP {
-                let trimmed = current_cell.trim().to_string();
-                if !trimmed.is_empty() {
-                    cells.push(trimmed);
-                }
-                current_cell = String::new();
+        if let Some(px) = prev_x
+            && ch.x - px > CELL_X_GAP
+        {
+            let trimmed = current_cell.trim().to_string();
+            if !trimmed.is_empty() {
+                cells.push(trimmed);
             }
+            current_cell = String::new();
         }
         prev_x = Some(ch.x + 1.0); // advance past this char's approximate width
         current_cell.push_str(&ch.ch);
@@ -186,8 +190,7 @@ pub fn get_dates(
     pages: &str,
     district: &str,
 ) -> Result<Vec<NaiveDate>, AppError> {
-    let doc = Document::load_mem(pdf_bytes)
-        .map_err(|e| AppError::PdfError(e.to_string()))?;
+    let doc = Document::load_mem(pdf_bytes).map_err(|e| AppError::PdfError(e.to_string()))?;
 
     let page_numbers: Vec<u32> = pages
         .split(',')
@@ -214,10 +217,10 @@ pub fn get_dates(
             if row_text == district_key {
                 let mut dates: Vec<NaiveDate> = Vec::new();
                 // dates row BEFORE the name row (first half of the year)
-                if row_idx > 0 {
-                    if let Some(prev_row) = table.get(row_idx - 1) {
-                        dates.extend(parse_dates_from_row(prev_row));
-                    }
+                if row_idx > 0
+                    && let Some(prev_row) = table.get(row_idx - 1)
+                {
+                    dates.extend(parse_dates_from_row(prev_row));
                 }
                 // dates row AFTER the name row (second half of the year)
                 if let Some(next_row) = table.get(row_idx + 1) {
