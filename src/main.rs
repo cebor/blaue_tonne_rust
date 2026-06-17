@@ -27,6 +27,9 @@ async fn main() {
         .split(',')
         .filter_map(|s| {
             let s = s.trim();
+            if s.is_empty() {
+                return None;
+            }
             // Accept both plain IPs ("127.0.0.1") and CIDR notation ("10.0.0.0/8").
             s.parse::<IpNet>()
                 .or_else(|_| s.parse::<std::net::IpAddr>().map(IpNet::from))
