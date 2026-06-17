@@ -4,7 +4,7 @@ FROM rust:1-slim AS builder
 WORKDIR /app
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev curl && rm -rf /var/lib/apt/lists/*
 
 # Layer-cache trick: build dependencies first with a stub main, then overwrite
 # with real sources. This avoids re-downloading/re-compiling dependencies on
@@ -24,7 +24,7 @@ RUN touch src/main.rs src/lib.rs && cargo build --release
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl && \
+    apt-get install -y --no-install-recommends ca-certificates curl tini && \
     rm -rf /var/lib/apt/lists/*
 
 # Non-root user
@@ -44,4 +44,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 ENV PLANS_PATH=/app/plans.yaml \
     BIND_ADDR=0.0.0.0:8080
 
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/blaue_tonne_rust"]
