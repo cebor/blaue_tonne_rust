@@ -65,7 +65,7 @@ async fn body_to_json(response: Response) -> serde_json::Value {
 }
 
 async fn get(state: AppState, path: &str) -> Response {
-    let app = build_router(state);
+    let app = build_router(state, vec![]);
     app.oneshot(
         Request::builder()
             .uri(path)
@@ -140,7 +140,7 @@ async fn test_missing_district_parameter_returns_422() {
 async fn test_cache_prevents_repeated_pdf_parsing() {
     let dates = fake_dates("Bad Aibling").unwrap();
     let state = state_with_cached_dates("Bad Aibling", dates.clone());
-    let app = build_router(state.clone());
+    let app = build_router(state.clone(), vec![]);
 
     let r1 = app
         .clone()
@@ -187,7 +187,7 @@ async fn test_multiple_districts_separate_cache_entries() {
         "Prien a. Chiemsee".to_string(),
         fake_dates("Prien a. Chiemsee").unwrap(),
     );
-    let app = build_router(state);
+    let app = build_router(state, vec![]);
 
     let r1 = app
         .clone()
