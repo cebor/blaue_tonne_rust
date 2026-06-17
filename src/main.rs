@@ -21,9 +21,9 @@ async fn main() {
     );
 
     // Comma-separated list of IPs/CIDRs whose X-Forwarded-For headers are trusted.
-    // Use "*" to trust all proxies. Default: "127.0.0.1".
+    // Use "*" to trust all proxies. Default: empty (X-Forwarded-For not trusted).
     let forwarded_allow_ips: Vec<IpNet> = std::env::var("FORWARDED_ALLOW_IPS")
-        .unwrap_or_else(|_| "127.0.0.1".to_string())
+        .unwrap_or_default()
         .split(',')
         .filter_map(|s| {
             let s = s.trim();
@@ -60,6 +60,8 @@ async fn main() {
         .expect("failed to bind");
 
     info!("Listening on {bind_addr}");
+    info!("API docs available at http://{bind_addr}/docs");
+
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

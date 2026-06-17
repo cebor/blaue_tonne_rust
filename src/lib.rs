@@ -122,7 +122,7 @@ pub fn build_router(state: AppState, forwarded_allow_ips: Vec<IpNet>) -> Router 
         );
 
     Router::new()
-        .merge(SwaggerUi::new("/docs").url("/api-doc/openapi.json", ApiDoc::openapi()))
+        .merge(SwaggerUi::new("/docs").url("/docs/openapi.json", ApiDoc::openapi()))
         .route("/health", get(handlers::health_check))
         .route("/lk_rosenheim", get(handlers::lk_rosenheim_handler))
         // Layer order with Router::layer: last `.layer()` call = outermost (runs first).
