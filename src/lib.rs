@@ -93,7 +93,6 @@ pub mod handlers {
     use axum::{
         extract::{Query, State},
         http::StatusCode,
-        response::IntoResponse,
         Json,
     };
     use bytes::Bytes;
@@ -101,7 +100,6 @@ pub mod handlers {
     use dashmap::DashMap;
     use reqwest::Client;
     use serde::{Deserialize, Serialize};
-    use serde_json::json;
 
     use super::AppState;
     use crate::errors::AppError;
@@ -127,8 +125,8 @@ pub mod handlers {
         ),
         tag = "health"
     )]
-    pub async fn health_check() -> impl IntoResponse {
-        Json(json!({ "status": "healthy" }))
+    pub async fn health_check() -> Json<HealthResponse> {
+        Json(HealthResponse { status: "healthy".to_string() })
     }
 
     #[derive(Deserialize, utoipa::ToSchema)]
@@ -221,7 +219,7 @@ pub mod handlers {
     pub async fn lk_rosenheim_handler(
         State(state): State<AppState>,
         Query(params): Query<DistrictQuery>,
-    ) -> Result<impl IntoResponse, AppError> {
+    ) -> Result<Json<Vec<String>>, AppError> {
         let district = &params.district;
 
         if let Some(cached) = state.dates_cache.get(district.as_str()) {
