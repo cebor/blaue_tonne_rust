@@ -1,5 +1,5 @@
 # ─── Stage 1: builder ────────────────────────────────────────────────────────
-FROM rust:1-slim AS builder
+FROM rust:1-slim-trixie AS builder
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ COPY plans.yaml ./plans.yaml
 RUN touch src/main.rs src/lib.rs && cargo build --release
 
 # ─── Stage 2: runtime ────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl tini && \
