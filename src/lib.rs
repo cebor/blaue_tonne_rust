@@ -14,7 +14,7 @@ use axum::{middleware, routing::get, Router};
 use ipnet::IpNet;
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
+use utoipa_swagger_ui::{Config, SwaggerUi};
 
 // ---------------------------------------------------------------------------
 // OpenAPI spec
@@ -54,6 +54,8 @@ pub struct ApiDoc;
 // ---------------------------------------------------------------------------
 
 pub fn build_router(state: AppState, forwarded_allow_ips: Vec<IpNet>) -> Router {
+    let api_doc_url = "/docs/openapi.json";
+    let api_doc_config = Config::new([api_doc_url]).use_base_layout();
     let allow_ips = Arc::new(forwarded_allow_ips);
 
     // Middleware: resolve the real client IP from ConnectInfo or X-Forwarded-For.
@@ -122,7 +124,7 @@ pub fn build_router(state: AppState, forwarded_allow_ips: Vec<IpNet>) -> Router 
         );
 
     Router::new()
-        .merge(SwaggerUi::new("/docs").url("/docs/openapi.json", ApiDoc::openapi()))
+        .merge(SwaggerUi::new("/docs").url(api_doc_url, ApiDoc::openapi()).config(api_doc_config))
         .route("/health", get(handlers::health_check))
         .route("/lk_rosenheim", get(handlers::lk_rosenheim_handler))
         // Layer order with Router::layer: last `.layer()` call = outermost (runs first).
