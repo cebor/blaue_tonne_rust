@@ -96,7 +96,6 @@ pub fn build_router(state: AppState, forwarded_allow_ips: Vec<IpNet>) -> Router 
     };
 
     // TraceLayer: creates a span per request containing method, URI and client IP.
-    // /health requests use a trace_span so they are only logged at TRACE level.
     let trace_layer = TraceLayer::new_for_http()
         .make_span_with(|req: &axum::extract::Request| {
             let client_ip = req
@@ -104,46 +103,23 @@ pub fn build_router(state: AppState, forwarded_allow_ips: Vec<IpNet>) -> Router 
                 .get::<ResolvedClientIp>()
                 .map(|r| r.0.to_string())
                 .unwrap_or_else(|| "-".to_string());
-            if req.uri().path() == "/health" {
-                tracing::trace_span!(
-                    "request",
-                    method = %req.method(),
-                    uri    = %req.uri(),
-                    client_ip = %client_ip,
-                )
-            } else {
-                tracing::info_span!(
-                    "request",
-                    method = %req.method(),
-                    uri    = %req.uri(),
-                    client_ip = %client_ip,
-                )
-            }
+            tracing::info_span!(
+                "request",
+                method = %req.method(),
+                uri    = %req.uri(),
+                client_ip = %client_ip,
+            )
         })
         .on_request(tower_http::trace::DefaultOnRequest::new().level(tracing::Level::TRACE))
         .on_response(
             |res: &axum::response::Response,
              latency: std::time::Duration,
-             span: &tracing::Span| {
-                // If the span is a trace_span (health) or disabled (health at INFO filter),
-                // emit at TRACE level; otherwise at INFO.
-                let is_trace = span
-                    .metadata()
-                    .map(|m| *m.level() == tracing::Level::TRACE)
-                    .unwrap_or(true);
-                if is_trace {
-                    tracing::trace!(
-                        status     = res.status().as_u16(),
-                        latency_ms = latency.as_millis(),
-                        "response sent"
-                    );
-                } else {
-                    tracing::info!(
-                        status     = res.status().as_u16(),
-                        latency_ms = latency.as_millis(),
-                        "response sent"
-                    );
-                }
+             _span: &tracing::Span| {
+                tracing::info!(
+                    status     = res.status().as_u16(),
+                    latency_ms = latency.as_millis(),
+                    "response sent"
+                );
             },
         );
 
