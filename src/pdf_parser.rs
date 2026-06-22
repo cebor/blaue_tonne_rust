@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use pdf_extract::{Document, MediaBox, OutputDev, OutputError, output_doc_page};
+use pdf_oxide::PdfDocument;
 
 use crate::errors::AppError;
 
@@ -10,7 +10,7 @@ const ROW_Y_TOLERANCE: f64 = 3.0;
 const CELL_X_GAP: f64 = 4.0;
 
 // ---------------------------------------------------------------------------
-// Character collector – implements OutputDev to gather per-character positions
+// Character entry — holds per-character position and content
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
@@ -18,61 +18,6 @@ struct CharEntry {
     x: f64,
     y: f64,
     ch: String,
-}
-
-struct TableExtractor {
-    chars: Vec<CharEntry>,
-}
-
-impl TableExtractor {
-    fn new() -> Self {
-        Self { chars: Vec::new() }
-    }
-}
-
-impl OutputDev for TableExtractor {
-    fn begin_page(
-        &mut self,
-        _page_num: u32,
-        _media_box: &MediaBox,
-        _art_box: Option<(f64, f64, f64, f64)>,
-    ) -> Result<(), OutputError> {
-        self.chars.clear();
-        Ok(())
-    }
-
-    fn end_page(&mut self) -> Result<(), OutputError> {
-        Ok(())
-    }
-
-    fn output_character(
-        &mut self,
-        trm: &pdf_extract::Transform,
-        _width: f64,
-        _spacing: f64,
-        _font_size: f64,
-        char: &str,
-    ) -> Result<(), OutputError> {
-        // trm is a euclid Transform2D; m31 = tx (x), m32 = ty (y)
-        self.chars.push(CharEntry {
-            x: trm.m31,
-            y: trm.m32,
-            ch: char.to_string(),
-        });
-        Ok(())
-    }
-
-    fn begin_word(&mut self) -> Result<(), OutputError> {
-        Ok(())
-    }
-
-    fn end_word(&mut self) -> Result<(), OutputError> {
-        Ok(())
-    }
-
-    fn end_line(&mut self) -> Result<(), OutputError> {
-        Ok(())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -190,19 +135,31 @@ pub fn get_dates(
     pages: &str,
     district: &str,
 ) -> Result<Vec<NaiveDate>, AppError> {
-    let doc = Document::load_mem(pdf_bytes).map_err(|e| AppError::PdfError(e.to_string()))?;
+    let doc =
+        PdfDocument::from_bytes(pdf_bytes.to_vec()).map_err(|e| AppError::PdfError(e.to_string()))?;
 
-    let page_numbers: Vec<u32> = pages
+    // pages are 1-based in plans.yaml; extract_chars uses 0-based indices
+    let page_numbers: Vec<usize> = pages
         .split(',')
-        .filter_map(|s| s.trim().parse::<u32>().ok())
+        .filter_map(|s| s.trim().parse::<usize>().ok())
+        .filter_map(|n| n.checked_sub(1))
         .collect();
 
-    for page_num in page_numbers {
-        let mut extractor = TableExtractor::new();
-        output_doc_page(&doc, &mut extractor, page_num)
-            .map_err(|e| AppError::PdfError(format!("{e:?}")))?;
+    for page_idx in page_numbers {
+        let chars = doc
+            .extract_chars(page_idx)
+            .map_err(|e| AppError::PdfError(e.to_string()))?;
 
-        let table = reconstruct_rows(extractor.chars);
+        let entries: Vec<CharEntry> = chars
+            .into_iter()
+            .map(|c| CharEntry {
+                x: c.origin_x as f64,
+                y: c.origin_y as f64,
+                ch: c.char.to_string(),
+            })
+            .collect();
+
+        let table = reconstruct_rows(entries);
 
         // District names in the PDF are stored as character fragments, so we
         // concatenate all cells in a row and compare without spaces.
@@ -239,16 +196,24 @@ pub fn get_dates(
 /// Debug helper: returns reconstructed table rows for a page.
 #[doc(hidden)]
 pub fn debug_extract(pdf_bytes: &[u8], pages: &str) -> Vec<Vec<String>> {
-    let doc = Document::load_mem(pdf_bytes).expect("load pdf");
-    let page_numbers: Vec<u32> = pages
+    let doc = PdfDocument::from_bytes(pdf_bytes.to_vec()).expect("load pdf");
+    let page_indices: Vec<usize> = pages
         .split(',')
-        .filter_map(|s| s.trim().parse::<u32>().ok())
+        .filter_map(|s| s.trim().parse::<usize>().ok())
+        .filter_map(|n| n.checked_sub(1))
         .collect();
     let mut all_rows = Vec::new();
-    for page_num in page_numbers {
-        let mut extractor = TableExtractor::new();
-        output_doc_page(&doc, &mut extractor, page_num).expect("output page");
-        let rows = reconstruct_rows(extractor.chars);
+    for page_idx in page_indices {
+        let chars = doc.extract_chars(page_idx).expect("extract chars");
+        let entries: Vec<CharEntry> = chars
+            .into_iter()
+            .map(|c| CharEntry {
+                x: c.origin_x as f64,
+                y: c.origin_y as f64,
+                ch: c.char.to_string(),
+            })
+            .collect();
+        let rows = reconstruct_rows(entries);
         all_rows.extend(rows);
     }
     all_rows
