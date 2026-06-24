@@ -10,10 +10,14 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
+    // `RUST_LOG` fully controls filtering when set (so e.g.
+    // `RUST_LOG=blaue_tonne_rust=trace` surfaces /health request logs); only
+    // when it is absent do we fall back to a sensible default.
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive(
-            "blaue_tonne_rust=info".parse().unwrap(),
-        ))
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("blaue_tonne_rust=info")),
+        )
         .init();
 
     let plans_path = PathBuf::from(

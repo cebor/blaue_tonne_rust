@@ -54,25 +54,55 @@ pub async fn resolve_client_ip(
 
 /// Span factory for `TraceLayer`: one span per request with method, URI and the
 /// already-resolved client IP.
+///
+/// `/health` requests use a `trace_span!` so they are only emitted at TRACE
+/// level (health checks are high-frequency and would otherwise flood the logs);
+/// all other requests use an `info_span!`.
 pub fn make_request_span(req: &Request) -> Span {
     let client_ip = req
         .extensions()
         .get::<ResolvedClientIp>()
         .map(|r| r.0.to_string())
         .unwrap_or_else(|| "-".to_string());
-    tracing::info_span!(
-        "request",
-        method = %req.method(),
-        uri = %req.uri(),
-        client_ip = %client_ip,
-    )
+    if req.uri().path() == "/health" {
+        tracing::trace_span!(
+            "request",
+            method = %req.method(),
+            uri = %req.uri(),
+            client_ip = %client_ip,
+        )
+    } else {
+        tracing::info_span!(
+            "request",
+            method = %req.method(),
+            uri = %req.uri(),
+            client_ip = %client_ip,
+        )
+    }
 }
 
-/// Response logger for `TraceLayer`: logs status and latency at INFO.
-pub fn log_response(res: &Response, latency: Duration, _span: &Span) {
-    tracing::info!(
-        status = res.status().as_u16(),
-        latency_ms = latency.as_millis(),
-        "response sent"
-    );
+/// Response logger for `TraceLayer`: logs status and latency.
+///
+/// The level mirrors the request span (see [`make_request_span`]): `/health`
+/// responses are logged at TRACE, everything else at INFO. The span's level is
+/// recovered from its metadata — a disabled span (e.g. the `/health`
+/// `trace_span!` under an INFO filter) yields `None`, which we treat as TRACE.
+pub fn log_response(res: &Response, latency: Duration, span: &Span) {
+    let is_trace = span
+        .metadata()
+        .map(|m| *m.level() == tracing::Level::TRACE)
+        .unwrap_or(true);
+    if is_trace {
+        tracing::trace!(
+            status = res.status().as_u16(),
+            latency_ms = latency.as_millis(),
+            "response sent"
+        );
+    } else {
+        tracing::info!(
+            status = res.status().as_u16(),
+            latency_ms = latency.as_millis(),
+            "response sent"
+        );
+    }
 }
