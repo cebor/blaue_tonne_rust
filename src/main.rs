@@ -2,9 +2,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use blaue_tonne_rust::build_router;
-use blaue_tonne_rust::config::load_plans;
+use blaue_tonne_rust::config::{load_plans, parse_forwarded_allow_ips};
 use blaue_tonne_rust::AppState;
-use ipnet::IpNet;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -26,21 +25,8 @@ async fn main() {
 
     // Comma-separated list of IPs/CIDRs whose X-Forwarded-For headers are trusted.
     // Use "*" to trust all proxies. Default: empty (X-Forwarded-For not trusted).
-    let forwarded_allow_ips: Vec<IpNet> = std::env::var("FORWARDED_ALLOW_IPS")
-        .unwrap_or_default()
-        .split(',')
-        .filter_map(|s| {
-            let s = s.trim();
-            if s.is_empty() {
-                return None;
-            }
-            // Accept both plain IPs ("127.0.0.1") and CIDR notation ("10.0.0.0/8").
-            s.parse::<IpNet>()
-                .or_else(|_| s.parse::<std::net::IpAddr>().map(IpNet::from))
-                .map_err(|e| tracing::warn!("Ignoring invalid FORWARDED_ALLOW_IPS entry {s:?}: {e}"))
-                .ok()
-        })
-        .collect();
+    let forwarded_allow_ips =
+        parse_forwarded_allow_ips(&std::env::var("FORWARDED_ALLOW_IPS").unwrap_or_default());
 
     if forwarded_allow_ips.is_empty() {
         info!("FORWARDED_ALLOW_IPS: none — X-Forwarded-For headers will not be trusted");

@@ -20,13 +20,13 @@ Tests require the fixture PDF at `tests/fixtures/lk_rosenheim_2026.pdf` (already
 
 | File | Responsibility |
 |------|---------------|
-| `src/main.rs` | Binary entry point: loads `plans.yaml`, parses `FORWARDED_ALLOW_IPS`, binds to `BIND_ADDR` |
+| `src/main.rs` | Binary entry point: loads `plans.yaml`, calls `parse_forwarded_allow_ips`, binds to `BIND_ADDR` |
 | `src/lib.rs` | `build_router`, OpenAPI spec (`ApiDoc`), module re-exports |
 | `src/middleware.rs` | `resolve_client_ip` (IP-resolution middleware), `make_request_span` + `log_response` (TraceLayer callbacks) |
 | `src/state.rs` | `AppState` (plans + two DashMap caches + reqwest `Client`), `ResolvedClientIp` extension type |
 | `src/handlers.rs` | `health_check`, `lk_rosenheim_handler`, `download_pdf`, `dates_to_iso`; utoipa annotations |
 | `src/pdf_parser.rs` | PDF → date extraction (public API: `get_dates`, `debug_extract`) |
-| `src/config.rs` | `Plan` struct, `load_plans(path)` |
+| `src/config.rs` | `Plan` struct, `load_plans(path)`, `parse_forwarded_allow_ips(raw)` |
 | `src/errors.rs` | `AppError` enum → `IntoResponse` (404/400/500/504) |
 | `plans.yaml` | PDF URLs and page ranges (single source of truth) |
 
@@ -85,10 +85,15 @@ In `lk_rosenheim_handler`, a `PdfError` whose message contains `"not found"` is 
 | Suite | File | Count |
 |-------|------|-------|
 | PDF parser unit tests (50 districts + 4 error/utility) | `tests/test_pdf_parser.rs` | 54 |
-| API integration tests | `tests/test_api.rs` | 12 |
+| API integration tests (incl. `download_pdf` HTTP paths via mockito) | `tests/test_api.rs` | 20 |
+| Config tests (`load_plans`, `parse_forwarded_allow_ips`) | `tests/test_config.rs` | 10 |
+| Middleware tests (`resolve_client_ip` via mini-router, span/log helpers) | `tests/test_middleware.rs` | 8 |
+| `AppError::into_response` tests | `tests/test_errors.rs` | 4 |
 | `parse_date` inline unit tests | `src/pdf_parser.rs` (`#[cfg(test)]`) | 4 |
 
-Integration tests use `tower::ServiceExt::oneshot` (not `axum-test`) to avoid version conflicts. Network tests use `mockito`. District names with special chars are URL-encoded with `urlencoding::encode`.
+`cargo llvm-cov` line coverage is ~85 % (≈96 % excluding the `main.rs` server-bootstrap entrypoint). The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout→504 path is intentionally untested (fixed 30 s client timeout).
+
+Integration tests use `tower::ServiceExt::oneshot` (not `axum-test`) to avoid version conflicts. Network tests use `mockito`. District names with special chars are URL-encoded with `urlencoding::encode`. The middleware tests inject `ConnectInfo<SocketAddr>` via `Request::builder().extension(...)` to exercise the X-Forwarded-For trusted-proxy path.
 
 Note: `test_missing_district_parameter_returns_422` checks for `StatusCode::BAD_REQUEST` (400) — axum 0.8 changed missing-query-param responses from 422 to 400.
 

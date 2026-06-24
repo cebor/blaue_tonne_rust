@@ -43,10 +43,14 @@ fn state_with_cached_dates(district: &str, dates: Vec<NaiveDate>) -> AppState {
     state
 }
 
-fn state_with_fixture_pdf() -> AppState {
+fn fixture_pdf_bytes() -> Bytes {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/lk_rosenheim_2026.pdf");
-    let pdf_bytes = Bytes::from(std::fs::read(&path).expect("fixture PDF not found"));
+    Bytes::from(std::fs::read(&path).expect("fixture PDF not found"))
+}
+
+fn state_with_fixture_pdf() -> AppState {
+    let pdf_bytes = fixture_pdf_bytes();
 
     let plan = Plan {
         url: "https://fake.test/schedule.pdf".to_string(),
@@ -293,3 +297,174 @@ api_district_test!(test_api_aschau, "Aschau");
 api_district_test!(test_api_bruckmuhl_1, "Bruckmühl 1");
 api_district_test!(test_api_feldkirchen_2, "Feldkirchen 2");
 api_district_test!(test_api_raubling_3, "Raubling 3");
+
+// ---------------------------------------------------------------------------
+// download_pdf: full real fetch path via mockito (serves the fixture PDF)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_download_pdf_full_fetch_success() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _mock = mock_server
+        .mock("GET", "/schedule.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body(fixture_pdf_bytes())
+        .create_async()
+        .await;
+
+    let plan = Plan {
+        url: format!("{}/schedule.pdf", mock_server.url()),
+        pages: "1,2".to_string(),
+    };
+    let url = plan.url.clone();
+    let state = AppState::new(vec![plan]);
+
+    let response = get(state.clone(), "/lk_rosenheim?district=Kolbermoor").await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_to_json(response).await;
+    assert!(!body.as_array().unwrap().is_empty());
+
+    // The fetched PDF bytes were cached under the URL.
+    assert!(state.pdf_cache.contains_key(&url));
+}
+
+// ---------------------------------------------------------------------------
+// get_dates success path against the pre-cached fixture PDF (no network)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_dates_from_fixture_caches_result() {
+    let state = state_with_fixture_pdf();
+    assert!(!state.dates_cache.contains_key("Kolbermoor"));
+
+    let response = get(state.clone(), "/lk_rosenheim?district=Kolbermoor").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_to_json(response).await;
+    assert!(!body.as_array().unwrap().is_empty());
+
+    // Handler stored the parsed dates in the cache.
+    assert!(state.dates_cache.contains_key("Kolbermoor"));
+}
+
+// ---------------------------------------------------------------------------
+// download_pdf: 404 → soft skip → eventually 404 DistrictNotFound
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_pdf_404_is_soft_skipped() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _mock = mock_server
+        .mock("GET", "/missing.pdf")
+        .with_status(404)
+        .create_async()
+        .await;
+
+    let plan = Plan {
+        url: format!("{}/missing.pdf", mock_server.url()),
+        pages: "1".to_string(),
+    };
+    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// download_pdf: non-2xx (500) → 500 propagated
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_pdf_server_error_returns_500() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _mock = mock_server
+        .mock("GET", "/broken.pdf")
+        .with_status(500)
+        .create_async()
+        .await;
+
+    let plan = Plan {
+        url: format!("{}/broken.pdf", mock_server.url()),
+        pages: "1".to_string(),
+    };
+    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+// ---------------------------------------------------------------------------
+// download_pdf: URL not ending in .pdf → 400 InvalidUrl (no network)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_non_pdf_url_returns_400() {
+    let plan = Plan {
+        url: "http://example.test/not-a-pdf-file".to_string(),
+        pages: "1".to_string(),
+    };
+    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_to_json(response).await;
+    assert!(body["detail"].as_str().unwrap().contains("PDF"));
+}
+
+// ---------------------------------------------------------------------------
+// download_pdf: .pdf URL but wrong content-type → 400 InvalidUrl
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_pdf_url_wrong_content_type_returns_400() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _mock = mock_server
+        .mock("GET", "/fake.pdf")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body("<html>not a pdf</html>")
+        .create_async()
+        .await;
+
+    let plan = Plan {
+        url: format!("{}/fake.pdf", mock_server.url()),
+        pages: "1".to_string(),
+    };
+    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_to_json(response).await;
+    assert!(body["detail"].as_str().unwrap().contains("valid PDF"));
+}
+
+// ---------------------------------------------------------------------------
+// download_pdf: connection error (no server) → 500 PdfError
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_pdf_connection_error_returns_500() {
+    // Port 1 is reserved/unused → connection refused (not a timeout).
+    let plan = Plan {
+        url: "http://127.0.0.1:1/schedule.pdf".to_string(),
+        pages: "1".to_string(),
+    };
+    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+// ---------------------------------------------------------------------------
+// get_dates: valid download but unparseable PDF bytes → 500 PdfError
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_corrupt_pdf_returns_500() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _mock = mock_server
+        .mock("GET", "/corrupt.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body("not actually a pdf")
+        .create_async()
+        .await;
+
+    let plan = Plan {
+        url: format!("{}/corrupt.pdf", mock_server.url()),
+        pages: "1".to_string(),
+    };
+    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
