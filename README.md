@@ -13,23 +13,23 @@ Axum service that extracts waste collection dates from PDF schedules and exposes
 ```
 blaue_tonne_rust/
 ├── src/
-│   ├── main.rs            # Binary entry point (server setup, config loading)
-│   ├── lib.rs             # Router builder, OpenAPI spec, module re-exports
-│   ├── middleware.rs      # Client-IP resolution middleware + TraceLayer callbacks
-│   ├── state.rs           # AppState (DashMap caches, reqwest client), ResolvedClientIp
-│   ├── handlers.rs        # HTTP handlers, utoipa annotations
-│   ├── config.rs          # YAML config loading
-│   ├── errors.rs          # AppError enum with IntoResponse
-│   └── pdf_parser.rs      # PDF table extraction and date parsing
+│   ├── main.rs                   # Binary entry point (server setup, config loading)
+│   ├── lib.rs                    # Router builder, OpenAPI spec, module re-exports
+│   ├── middleware.rs             # Client-IP resolution middleware + TraceLayer callbacks
+│   ├── state.rs                  # AppState (DashMap caches, reqwest client), ResolvedClientIp
+│   ├── handlers.rs               # HTTP handlers, utoipa annotations
+│   ├── config.rs                 # YAML config loading
+│   ├── errors.rs                 # AppError enum with IntoResponse
+│   └── pdf_parser.rs             # PDF table extraction and date parsing
 ├── tests/
-│   ├── test_api.rs        # Integration tests for HTTP endpoints
-│   ├── test_pdf_parser.rs # Unit tests for PDF parsing
+│   ├── test_api.rs               # Integration tests for HTTP endpoints
+│   ├── test_pdf_parser.rs        # Unit tests for PDF parsing
 │   └── fixtures/
 │       └── lk_rosenheim_2026.pdf
-├── plans.yaml             # Configuration: PDF URLs and page ranges
+├── plans.yaml                    # Configuration: PDF URLs and page ranges
 ├── Cargo.toml
-├── Dockerfile             # Multi-stage Docker build
-└── README.md              # This file
+├── Dockerfile                    # Multi-stage Docker build
+└── README.md                     # This file
 ```
 
 **Key Files:**
