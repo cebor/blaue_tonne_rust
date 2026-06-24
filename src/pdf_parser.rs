@@ -23,12 +23,11 @@ fn spans_to_rows(spans: &[TextSpan]) -> Vec<Vec<String>> {
 
     let mut rows: Vec<(f32, Vec<String>)> = Vec::new();
     for span in sorted {
-        if let Some(last) = rows.last_mut() {
-            if (span.bbox.y - last.0).abs() <= Y_TOLERANCE {
+        if let Some(last) = rows.last_mut()
+            && (span.bbox.y - last.0).abs() <= Y_TOLERANCE {
                 last.1.push(span.text.clone());
                 continue;
             }
-        }
         rows.push((span.bbox.y, vec![span.text.clone()]));
     }
     rows.into_iter().map(|(_, texts)| texts).collect()
@@ -100,11 +99,10 @@ pub fn get_dates(
             if row_text == district_key {
                 let mut dates: Vec<NaiveDate> = Vec::new();
                 // dates row BEFORE the name row (first half of the year)
-                if row_idx > 0 {
-                    if let Some(prev_row) = rows.get(row_idx - 1) {
+                if row_idx > 0
+                    && let Some(prev_row) = rows.get(row_idx - 1) {
                         dates.extend(parse_dates_from_row(prev_row));
                     }
-                }
                 // dates row AFTER the name row (second half of the year)
                 if let Some(next_row) = rows.get(row_idx + 1) {
                     dates.extend(parse_dates_from_row(next_row));
