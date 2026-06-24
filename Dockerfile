@@ -23,7 +23,7 @@ COPY plans.yaml ./plans.yaml
 RUN cargo build --release
 
 # ─── Stage 4: runtime (distroless, non-root) ──────────────────────────────────
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot
 WORKDIR /app
 COPY --from=builder /app/target/release/blaue_tonne_rust /usr/local/bin/blaue_tonne_rust
 COPY --from=builder /app/plans.yaml /app/plans.yaml
