@@ -9,6 +9,19 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
+    // `blaue_tonne_rust healthcheck` performs a GET on /health and exits with
+    // code 0 (healthy) or 1. Used by the Docker HEALTHCHECK: the distroless
+    // runtime image has neither a shell nor curl.
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+        let url = format!("http://{}/health", addr.replace("0.0.0.0", "127.0.0.1"));
+        let ok = reqwest::get(&url)
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+
     // `RUST_LOG` fully controls filtering when set (so e.g.
     // `RUST_LOG=blaue_tonne_rust=trace` surfaces /health request logs); only
     // when it is absent do we fall back to a sensible default.
@@ -59,6 +72,37 @@ async fn main() {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .expect("server error");
+}
+
+/// Resolves on SIGINT (ctrl+c) or SIGTERM (`docker stop` / Kubernetes), letting
+/// `axum::serve` shut down gracefully. Installing these handlers explicitly is
+/// also what makes the process respond to signals when it runs as PID 1 in the
+/// container (no `tini`): an unhandled SIGINT/SIGTERM is ignored by PID 1.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    info!("Shutdown signal received, stopping server");
 }

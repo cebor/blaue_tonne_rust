@@ -120,7 +120,7 @@ plans:
 
 ## Docker
 
-Two-stage build: `rust:1-slim-trixie` builder → `debian:trixie-slim` runtime. Build dependencies: `libssl-dev`, `pkg-config`. Runtime uses `tini` as PID-1 init and a non-root `axum` user. Layer-cache trick: stub `src/main.rs` + `src/lib.rs` are built first to cache compiled dependencies before real sources are copied.
+Four-stage build (`cargo-chef`): `chef` base (`rust:1-slim-trixie` + `cargo-chef`) → `planner` (writes `recipe.json`) → `builder` (`cargo chef cook` caches deps, then `cargo build --release`) → `gcr.io/distroless/cc-debian12:nonroot` runtime (~60 MB). `reqwest` uses `rustls-tls` (no OpenSSL), so the builder needs no `libssl-dev`/`pkg-config`; `curl` **is** required in the builder because `utoipa-swagger-ui`'s build script downloads the Swagger UI assets with it. The distroless runtime has no shell/curl, no `tini`, and no manual user (the `:nonroot` tag already runs as uid 65532). The binary runs as PID 1 and handles SIGINT/SIGTERM itself via `axum::serve(...).with_graceful_shutdown(shutdown_signal())` (`shutdown_signal` in `src/main.rs`) — without that an unhandled signal would be ignored by PID 1, so ctrl+c / `docker stop` wouldn't work. Health checks use the binary's own `healthcheck` subcommand (`blaue_tonne_rust healthcheck` → GET `/health`, exit 0/1) since curl isn't available. See `.dockerignore` for the build-context exclusions.
 
 ## Key Conventions
 
