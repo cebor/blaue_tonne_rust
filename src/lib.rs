@@ -1,18 +1,18 @@
 pub mod config;
 pub mod errors;
 pub mod handlers;
+pub mod middleware;
 pub mod pdf_parser;
 pub mod state;
 
 pub use state::{AppState, ResolvedClientIp};
 
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use axum::extract::ConnectInfo;
-use axum::{middleware, routing::get, Router};
+use axum::{routing::get, Router};
 use ipnet::IpNet;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultOnRequest, TraceLayer};
+use tracing::Level;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::{Config, SwaggerUi};
 
@@ -58,70 +58,15 @@ pub fn build_router(state: AppState, forwarded_allow_ips: Vec<IpNet>) -> Router 
     let api_doc_config = Config::new([api_doc_url]).use_base_layout();
     let allow_ips = Arc::new(forwarded_allow_ips);
 
-    // Middleware: resolve the real client IP from ConnectInfo or X-Forwarded-For.
-    // Trusted proxy check: only forward headers from IPs listed in allow_ips.
-    let ip_middleware = {
-        let allow_ips = Arc::clone(&allow_ips);
-        middleware::from_fn(
-            move |mut req: axum::extract::Request, next: middleware::Next| {
-                let allow_ips = Arc::clone(&allow_ips);
-                async move {
-                    let peer_ip: Option<IpAddr> = req
-                        .extensions()
-                        .get::<ConnectInfo<SocketAddr>>()
-                        .map(|ci| ci.0.ip());
-
-                    let client_ip = if let Some(peer) = peer_ip {
-                        if allow_ips.iter().any(|net| net.contains(&peer)) {
-                            // Proxy is trusted: use leftmost entry of X-Forwarded-For
-                            req.headers()
-                                .get("x-forwarded-for")
-                                .and_then(|v| v.to_str().ok())
-                                .and_then(|s| s.split(',').next())
-                                .and_then(|s| s.trim().parse::<IpAddr>().ok())
-                                .unwrap_or(peer)
-                        } else {
-                            peer
-                        }
-                    } else {
-                        // No ConnectInfo available (e.g. unit tests with oneshot)
-                        IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
-                    };
-
-                    req.extensions_mut().insert(ResolvedClientIp(client_ip));
-                    next.run(req).await
-                }
-            },
-        )
-    };
+    // Resolve the real client IP (ConnectInfo / X-Forwarded-For) before tracing.
+    let ip_middleware =
+        axum::middleware::from_fn_with_state(allow_ips, middleware::resolve_client_ip);
 
     // TraceLayer: creates a span per request containing method, URI and client IP.
     let trace_layer = TraceLayer::new_for_http()
-        .make_span_with(|req: &axum::extract::Request| {
-            let client_ip = req
-                .extensions()
-                .get::<ResolvedClientIp>()
-                .map(|r| r.0.to_string())
-                .unwrap_or_else(|| "-".to_string());
-            tracing::info_span!(
-                "request",
-                method = %req.method(),
-                uri    = %req.uri(),
-                client_ip = %client_ip,
-            )
-        })
-        .on_request(tower_http::trace::DefaultOnRequest::new().level(tracing::Level::TRACE))
-        .on_response(
-            |res: &axum::response::Response,
-             latency: std::time::Duration,
-             _span: &tracing::Span| {
-                tracing::info!(
-                    status     = res.status().as_u16(),
-                    latency_ms = latency.as_millis(),
-                    "response sent"
-                );
-            },
-        );
+        .make_span_with(middleware::make_request_span)
+        .on_request(DefaultOnRequest::new().level(Level::TRACE))
+        .on_response(middleware::log_response);
 
     Router::new()
         .merge(SwaggerUi::new("/docs").url(api_doc_url, ApiDoc::openapi()).config(api_doc_config))

@@ -135,7 +135,7 @@ fn test_all_districts_count() {
 fn test_debug_extraction() {
     let pdf = fixture_pdf();
     use blaue_tonne_rust::pdf_parser::debug_extract;
-    let rows = debug_extract(&pdf, "1");
+    let rows = debug_extract(&pdf, "1").expect("debug_extract failed");
     println!("=== Page 1: {} rows ===", rows.len());
     for (i, row) in rows.iter().take(30).enumerate() {
         println!("  row {:02}: {:?}", i, row);

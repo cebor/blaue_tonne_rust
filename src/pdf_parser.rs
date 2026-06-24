@@ -17,9 +17,8 @@ fn spans_to_rows(spans: &[TextSpan]) -> Vec<Vec<String>> {
     let mut sorted: Vec<&TextSpan> = spans.iter().collect();
     sorted.sort_by(|a, b| {
         b.bbox.y
-            .partial_cmp(&a.bbox.y)
-            .unwrap()
-            .then(a.bbox.x.partial_cmp(&b.bbox.x).unwrap())
+            .total_cmp(&a.bbox.y)
+            .then(a.bbox.x.total_cmp(&b.bbox.x))
     });
 
     let mut rows: Vec<(f32, Vec<String>)> = Vec::new();
@@ -122,8 +121,9 @@ pub fn get_dates(
 
 /// Debug helper: returns reconstructed table rows for a page.
 #[doc(hidden)]
-pub fn debug_extract(pdf_bytes: &[u8], pages: &str) -> Vec<Vec<String>> {
-    let doc = PdfDocument::from_bytes(pdf_bytes.to_vec()).expect("load pdf");
+pub fn debug_extract(pdf_bytes: &[u8], pages: &str) -> Result<Vec<Vec<String>>, AppError> {
+    let doc = PdfDocument::from_bytes(pdf_bytes.to_vec())
+        .map_err(|e| AppError::PdfError(e.to_string()))?;
     let page_indices: Vec<usize> = pages
         .split(',')
         .filter_map(|s| s.trim().parse::<usize>().ok())
@@ -131,10 +131,12 @@ pub fn debug_extract(pdf_bytes: &[u8], pages: &str) -> Vec<Vec<String>> {
         .collect();
     let mut all_rows = Vec::new();
     for page_idx in page_indices {
-        let spans = doc.extract_spans(page_idx).expect("extract spans");
+        let spans = doc
+            .extract_spans(page_idx)
+            .map_err(|e| AppError::PdfError(e.to_string()))?;
         all_rows.extend(spans_to_rows(&spans));
     }
-    all_rows
+    Ok(all_rows)
 }
 
 // ---------------------------------------------------------------------------

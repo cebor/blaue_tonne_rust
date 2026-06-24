@@ -4,7 +4,7 @@ use axum::{
     Json,
 };
 use bytes::Bytes;
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
 use dashmap::DashMap;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -104,7 +104,7 @@ fn dates_to_iso(dates: &[NaiveDate]) -> Vec<String> {
     dates
         .iter()
         .map(|d| {
-            let dt: NaiveDateTime = d.and_hms_opt(0, 0, 0).unwrap();
+            let dt = d.and_time(NaiveTime::MIN);
             Utc.from_utc_datetime(&dt).to_rfc3339()
         })
         .collect()

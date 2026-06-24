@@ -22,6 +22,7 @@ Tests require the fixture PDF at `tests/fixtures/lk_rosenheim_2026.pdf` (already
 |------|---------------|
 | `src/main.rs` | Binary entry point: loads `plans.yaml`, parses `FORWARDED_ALLOW_IPS`, binds to `BIND_ADDR` |
 | `src/lib.rs` | `build_router`, OpenAPI spec (`ApiDoc`), module re-exports |
+| `src/middleware.rs` | `resolve_client_ip` (IP-resolution middleware), `make_request_span` + `log_response` (TraceLayer callbacks) |
 | `src/state.rs` | `AppState` (plans + two DashMap caches + reqwest `Client`), `ResolvedClientIp` extension type |
 | `src/handlers.rs` | `health_check`, `lk_rosenheim_handler`, `download_pdf`, `dates_to_iso`; utoipa annotations |
 | `src/pdf_parser.rs` | PDF → date extraction (public API: `get_dates`, `debug_extract`) |
@@ -42,10 +43,10 @@ Tests require the fixture PDF at `tests/fixtures/lk_rosenheim_2026.pdf` (already
 
 ## Middleware & Request Pipeline
 
-Layer order in `build_router`: `ip_middleware` is added last (`.layer()`) so it is outermost — it runs **before** `TraceLayer`, ensuring the span already has `client_ip` populated.
+Layer order in `build_router`: `ip_middleware` is added last (`.layer()`) so it is outermost — it runs **before** `TraceLayer`, ensuring the span already has `client_ip` populated. The middleware logic lives in `src/middleware.rs`.
 
-1. **`ip_middleware`** — resolves real client IP. If the connecting peer is in `FORWARDED_ALLOW_IPS`, the leftmost `X-Forwarded-For` entry is used; otherwise the socket IP is used. Falls back to `127.0.0.1` in unit tests (no `ConnectInfo`). Inserts `ResolvedClientIp` extension.
-2. **`TraceLayer`** — creates a `tracing::info_span!` per request (method, URI, client_ip); logs response status + latency_ms at INFO.
+1. **`ip_middleware`** — `middleware::resolve_client_ip`, wired up via `axum::middleware::from_fn_with_state` with the `FORWARDED_ALLOW_IPS` allowlist as state. If the connecting peer is in the allowlist, the leftmost `X-Forwarded-For` entry is used; otherwise the socket IP is used. Falls back to `127.0.0.1` in unit tests (no `ConnectInfo`). Inserts `ResolvedClientIp` extension.
+2. **`TraceLayer`** — uses `middleware::make_request_span` to create a `tracing::info_span!` per request (method, URI, client_ip) and `middleware::log_response` to log response status + latency_ms at INFO.
 
 ## Environment Variables
 
@@ -60,12 +61,12 @@ Layer order in `build_router`: `ip_middleware` is added last (`.layer()`) so it 
 
 District names in this PDF are rendered as character fragments (e.g. "Bad Aibling" → cells `["B","ad","A","ib","ling"]`). Matching strips whitespace from both the concatenated row text and the district name before comparing. Dates live on the row **before** and the row **after** the district name row.
 
-Internal algorithm in `src/pdf_parser.rs`:
-1. `TableExtractor` (implements `OutputDev`) collects per-character `(x, y, ch)` triples via `output_doc_page`.
-2. `reconstruct_rows`: sort by Y descending, group by `ROW_Y_TOLERANCE = 3.0` pts, then split each row into cells by X gaps > `CELL_X_GAP = 4.0` pts. Cell-advancement uses `prev_x = ch.x + 1.0` to avoid re-splitting multi-byte characters.
-3. `parse_date`: takes the last 8 characters of a cell string and parses `%d.%m.%y` (e.g. `"Mo. 06.01.26"` → `06.01.26`).
-4. `get_dates` returns up to ~24 dates per district (two rows × many cells).
-5. `debug_extract` (pub, `#[doc(hidden)]`) — returns raw table rows for debugging; used in `test_debug_extraction`.
+Internal algorithm in `src/pdf_parser.rs` (backed by `pdf_oxide`):
+1. `PdfDocument::extract_spans(page_idx)` returns `TextSpan`s, each with a `bbox` (`x`, `y`) and `text`.
+2. `spans_to_rows`: sort spans by Y descending (PDF Y increases upward), then X ascending; group consecutive spans into a row while their Y delta is `<= Y_TOLERANCE = 5.0` pts. Each row is a `Vec<String>` of span texts (no per-character X-gap splitting — `pdf_oxide` already returns coherent spans).
+3. `parse_date`: takes the last `DATE_LENGTH = 8` characters of a cell string and parses `%d.%m.%y` (e.g. `"Mo. 06.01.26"` → `06.01.26`).
+4. `get_dates` returns up to ~24 dates per district (the row before + the row after the district-name row).
+5. `debug_extract` (pub, `#[doc(hidden)]`) — returns `Result<Vec<Vec<String>>, AppError>` of reconstructed rows for debugging; used in `test_debug_extraction`.
 
 50 districts are supported (see `DISTRICTS` constant in `tests/test_pdf_parser.rs`).
 
@@ -110,11 +111,11 @@ plans:
     pages: "1,2"                # comma-separated page numbers (string)
 ```
 
-`pages` is passed directly to `get_dates` and forwarded to `pdf-extract`.
+`pages` is passed directly to `get_dates`, which parses the comma-separated 1-based page numbers and uses them as 0-based indices for `pdf_oxide`.
 
 ## Docker
 
-Two-stage build: `rust:1-slim` builder → `debian:bookworm-slim` runtime. Build dependencies: `libssl-dev`, `pkg-config`. Runtime uses `tini` as PID-1 init and a non-root `axum` user. Layer-cache trick: stub `src/main.rs` + `src/lib.rs` are built first to cache compiled dependencies before real sources are copied.
+Two-stage build: `rust:1-slim-trixie` builder → `debian:trixie-slim` runtime. Build dependencies: `libssl-dev`, `pkg-config`. Runtime uses `tini` as PID-1 init and a non-root `axum` user. Layer-cache trick: stub `src/main.rs` + `src/lib.rs` are built first to cache compiled dependencies before real sources are copied.
 
 ## Key Conventions
 

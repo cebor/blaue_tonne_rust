@@ -15,6 +15,7 @@ blaue_tonne_rust/
 ├── src/
 │   ├── main.rs            # Binary entry point (server setup, config loading)
 │   ├── lib.rs             # Router builder, OpenAPI spec, module re-exports
+│   ├── middleware.rs      # Client-IP resolution middleware + TraceLayer callbacks
 │   ├── state.rs           # AppState (DashMap caches, reqwest client), ResolvedClientIp
 │   ├── handlers.rs        # HTTP handlers, utoipa annotations
 │   ├── config.rs          # YAML config loading
@@ -34,7 +35,7 @@ blaue_tonne_rust/
 **Key Files:**
 - `src/handlers.rs` – HTTP handlers (`health_check`, `lk_rosenheim_handler`)
 - `src/state.rs` – `AppState` with two `DashMap` caches (PDFs by URL, dates by district) and `reqwest::Client`
-- `src/pdf_parser.rs` – PDF text extraction via `pdf-extract` (lopdf), table reconstruction, date parsing
+- `src/pdf_parser.rs` – PDF text extraction via `pdf_oxide`, row reconstruction, date parsing
 - `plans.yaml` – Single-source config for PDF URLs and page ranges (1-indexed)
 
 ## API Endpoints
