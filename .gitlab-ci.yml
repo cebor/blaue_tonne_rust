@@ -1,0 +1,46 @@
+stages:
+  - build
+  - test
+
+variables:
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+
+default:
+  cache:
+    paths:
+      - .cargo/
+      - target/
+
+build:
+  stage: build
+  image: rust:latest
+  script:
+    - rustc --version && cargo --version
+    - cargo build --release --verbose
+  artifacts:
+    paths:
+      - target/debug/
+      - target/release/
+    expire_in: 1 hour
+
+test:
+  stage: test
+  image: rust:latest
+  dependencies:
+    - build
+  before_script:
+    - cargo install cargo-binstall --locked
+    - cargo binstall cargo-nextest --secure
+    - cargo binstall cargo-llvm-cov
+    - rustc --version && cargo --version
+  artifacts:
+    reports:
+      junit: target/nextest/default/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: target/llvm-cov-target/cobertura.xml
+  # this uses region for coverage summary
+  coverage: '/TOTAL\s+(\d+\s+)+(\d+\.\d+\%)/'
+  script:
+    - cargo llvm-cov nextest
+    - cargo llvm-cov report --cobertura --output-path target/llvm-cov-target/cobertura.xml
