@@ -17,11 +17,11 @@ build:
   script:
     - rustc --version && cargo --version
     - cargo build --release --verbose
-  artifacts:
-    paths:
-      - target/debug/
-      - target/release/
-    expire_in: 1 hour
+  # artifacts:
+  #   paths:
+  #     - target/debug/
+  #     - target/release/
+  #   expire_in: 1 hour
 
 test:
   stage: test
