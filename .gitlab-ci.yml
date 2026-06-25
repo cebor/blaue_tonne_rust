@@ -2,14 +2,14 @@ stages:
   - build
   - test
 
-variables:
-  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+# variables:
+#   CARGO_HOME: $CI_PROJECT_DIR/.cargo
 
-default:
-  cache:
-    paths:
-      - .cargo/
-      - target/
+# default:
+#   cache:
+#     paths:
+#       - .cargo/
+#       - target/
 
 build:
   stage: build
