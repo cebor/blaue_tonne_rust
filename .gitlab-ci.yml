@@ -2,7 +2,7 @@ stages:
   - test
 
 variables:
-  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
   CARGO_INCREMENTAL: "0"
 
 default:
