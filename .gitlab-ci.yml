@@ -20,10 +20,7 @@ test:
   before_script:
     - export PATH="$CARGO_HOME/bin:$PATH"
     - rustc --version && cargo --version
-    - |
-      if ! command -v cargo-binstall &>/dev/null; then
-        cargo install cargo-binstall --locked
-      fi
+    - cargo install cargo-binstall --locked
     - cargo binstall cargo-nextest --secure -y
     - cargo binstall cargo-llvm-cov -y
   artifacts:
