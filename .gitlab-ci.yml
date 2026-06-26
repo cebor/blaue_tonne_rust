@@ -1,6 +1,6 @@
 stages:
-  - test
   - build
+  - test
   - deploy
   - validate
 
@@ -23,6 +23,25 @@ variables:
     - chmod 700 ~/.ssh
     - cp "$SSH_KNOWN_HOSTS" ~/.ssh/known_hosts
     - chmod 644 ~/.ssh/known_hosts
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+
+build:
+  image: docker:latest
+  stage: build
+  services:
+    - docker:dind
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+  script:
+    - docker build -t $IMAGE_LATEST -t $IMAGE_SHA .
+    - docker push $IMAGE_LATEST
+    # - docker push $IMAGE_SHA
+  tags:
+    - dind
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
@@ -52,25 +71,6 @@ test:
       coverage_report:
         coverage_format: cobertura
         path: target/llvm-cov-target/cobertura.xml
-
-# ── Build ─────────────────────────────────────────────────────────────────────
-
-build:
-  image: docker:latest
-  stage: build
-  services:
-    - docker:dind
-  before_script:
-    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
-  script:
-    - docker build -t $IMAGE_LATEST -t $IMAGE_SHA .
-    - docker push $IMAGE_LATEST
-    # - docker push $IMAGE_SHA
-  tags:
-    - dind
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: on_success
 
 # ── Security Scans ────────────────────────────────────────────────────────────
 
