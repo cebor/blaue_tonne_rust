@@ -18,6 +18,7 @@ default:
 test:
   stage: test
   before_script:
+    - export PATH="$CARGO_HOME/bin:$PATH"
     - rustc --version && cargo --version
     - |
       if ! command -v cargo-binstall &>/dev/null; then
