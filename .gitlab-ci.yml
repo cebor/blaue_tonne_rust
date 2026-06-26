@@ -13,7 +13,6 @@ default:
         - Cargo.lock
     paths:
       - .cargo/registry/
-      - .cargo/git/
       - target/
 
 test:
