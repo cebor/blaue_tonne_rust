@@ -12,7 +12,7 @@ default:
       files:
         - Cargo.lock
     paths:
-      - .cargo/registry/
+      - .cargo/
       - target/
 
 test:
