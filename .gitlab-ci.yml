@@ -1,9 +1,16 @@
 stages:
   - test
+  - build
+  - deploy
+  - validate
 
 variables:
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
   CARGO_INCREMENTAL: "0"
+  IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
+  IMAGE_SHA: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+  # Used by the Container-Scanning template
+  CS_IMAGE: $IMAGE_LATEST
 
 default:
   image: rust:latest
@@ -15,6 +22,19 @@ default:
       - .cargo/
       - target/
 
+.deploy:
+  before_script:
+    - 'command -v ssh-agent >/dev/null || ( apt-get update -y && apt-get install openssh-client -y )'
+    - eval $(ssh-agent -s)
+    - chmod 400 "$SSH_PRIVATE_KEY"
+    - ssh-add "$SSH_PRIVATE_KEY"
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - cp "$SSH_KNOWN_HOSTS" ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+
+# ── Test ──────────────────────────────────────────────────────────────────────
+
 test:
   stage: test
   before_script:
@@ -23,13 +43,96 @@ test:
     - cargo install cargo-binstall --locked
     - cargo binstall cargo-nextest --secure -y
     - cargo binstall cargo-llvm-cov -y
+  script:
+    - cargo llvm-cov nextest
+    - cargo llvm-cov report --cobertura --output-path target/llvm-cov-target/cobertura.xml
+  coverage: '/TOTAL\s+(\d+\s+)+(\d+\.\d+\%)/'
   artifacts:
     reports:
       junit: target/nextest/default/junit.xml
       coverage_report:
         coverage_format: cobertura
         path: target/llvm-cov-target/cobertura.xml
-  coverage: '/TOTAL\s+(\d+\s+)+(\d+\.\d+\%)/'
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+
+build:
+  image: docker:latest
+  stage: build
+  services:
+    - docker:dind
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
   script:
-    - cargo llvm-cov nextest
-    - cargo llvm-cov report --cobertura --output-path target/llvm-cov-target/cobertura.xml
+    - docker build -t $IMAGE_LATEST -t $IMAGE_SHA .
+    - docker push $IMAGE_LATEST
+    # - docker push $IMAGE_SHA
+  tags:
+    - dind
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+
+# ── Security Scans ────────────────────────────────────────────────────────────
+
+include:
+  - template: Jobs/SAST.gitlab-ci.yml
+  - template: Jobs/Container-Scanning.gitlab-ci.yml
+  - template: Jobs/SAST-IaC.gitlab-ci.yml
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+
+# ── Deploy ────────────────────────────────────────────────────────────────────
+
+deploy:
+  image: ubuntu
+  stage: deploy
+  extends: .deploy
+  script:
+    - ssh "$SSH_USER"@"$SSH_SERVER" "docker pull $IMAGE_LATEST"
+    - ssh "$SSH_USER"@"$SSH_SERVER" "docker stop blaue_tonne_api || true"
+    - ssh "$SSH_USER"@"$SSH_SERVER" "docker rm blaue_tonne_api || true"
+    - ssh "$SSH_USER"@"$SSH_SERVER" "docker run --name blaue_tonne_api -d --restart always -p 127.0.0.1:8245:8080 $IMAGE_LATEST"
+  environment:
+    name: production
+    on_stop: undeploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+
+undeploy:
+  image: ubuntu
+  stage: deploy
+  extends: .deploy
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - ssh "$SSH_USER"@"$SSH_SERVER" "docker stop blaue_tonne_api && docker rm blaue_tonne_api"
+  environment:
+    name: production
+    action: stop
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  allow_failure: true
+
+# ── Validate ──────────────────────────────────────────────────────────────────
+
+validate_deployment:
+  stage: validate
+  image: curlimages/curl:latest
+  variables:
+    GIT_STRATEGY: none
+  script:
+    # Retry for up to 30 s to give the container time to start
+    - |
+      for i in $(seq 1 6); do
+        curl -fsL blauetonne.stkn.org/health && exit 0
+        echo "Attempt $i failed, retrying in 5s..."
+        sleep 5
+      done
+      exit 1
+  allow_failure: false
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+  needs: ["deploy"]
