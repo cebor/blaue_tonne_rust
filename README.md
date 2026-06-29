@@ -70,8 +70,8 @@ Returns `{"status": "healthy"}`.
 
 ### API Docs
 ```bash
-GET /docs                    # Swagger UI
-GET /docs/openapi.json    # OpenAPI JSON spec
+GET /docs                   # Swagger UI
+GET /docs/openapi.json      # OpenAPI JSON spec
 ```
 
 ## Development
