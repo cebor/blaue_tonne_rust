@@ -1,7 +1,8 @@
 # ─── Stage 1: chef (cargo-chef base) ──────────────────────────────────────────
 FROM rust:1-slim-trixie AS chef
-# curl is required at build time by utoipa-swagger-ui's build script (downloads
-# the Swagger UI assets). rustls means no libssl-dev/pkg-config are needed.
+# curl is needed at build time by utoipa-swagger-ui's build script (downloads the
+# Swagger UI assets). No other build deps: aws-lc-sys (via reqwest's rustls/aws-lc-rs)
+# builds with the base image's gcc/libc6-dev; no cmake/make, no OpenSSL.
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
