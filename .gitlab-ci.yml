@@ -7,6 +7,11 @@ stages:
 variables:
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
   CARGO_INCREMENTAL: "0"
+  # Cap cross-crate compile parallelism to reduce peak RAM during dependency
+  # compilation (default is one rustc job per CPU core, which can OOM on
+  # many-core runners). Applies to the `test` job and is forwarded to the
+  # Docker build via --build-arg.
+  CARGO_BUILD_JOBS: "2"
   IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
   IMAGE_SHA: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
   # Used by the Container-Scanning template
@@ -34,7 +39,7 @@ build:
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
   script:
-    - docker build -t $IMAGE_LATEST -t $IMAGE_SHA .
+    - docker build --build-arg CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS" -t $IMAGE_LATEST -t $IMAGE_SHA .
     - docker push $IMAGE_LATEST
     # - docker push $IMAGE_SHA
   tags:
@@ -48,6 +53,10 @@ build:
 test:
   image: rust:latest
   stage: test
+  variables:
+    # Trim debug info to cut link-time RAM/disk; line-tables-only still lets
+    # cargo llvm-cov map coverage correctly.
+    CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
   cache:
     key:
       files:
