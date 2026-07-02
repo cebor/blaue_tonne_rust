@@ -16,7 +16,7 @@ struct Config {
 
 pub fn load_plans(path: &Path) -> Result<Vec<Plan>, Box<dyn std::error::Error>> {
     let content = fs::read_to_string(path)?;
-    let config: Config = serde_yaml::from_str(&content)?;
+    let config: Config = serde_yaml_ng::from_str(&content)?;
     Ok(config.plans)
 }
 

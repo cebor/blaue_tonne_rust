@@ -4,26 +4,32 @@ use axum::{
     Json,
 };
 use serde_json::json;
+use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum AppError {
+    #[error("District not found")]
     DistrictNotFound,
+    #[error("Service temporarily unavailable")]
     ServiceUnavailable,
+    #[error("{0}")]
     InvalidUrl(String),
+    /// Upstream returned HTTP 404 for a plan's PDF. Soft-skipped in
+    /// `lk_rosenheim_handler` (the next plan is tried instead).
+    #[error("PDF not found at {0}")]
+    PdfNotFound(String),
+    #[error("{0}")]
     PdfError(String),
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            AppError::DistrictNotFound => (StatusCode::NOT_FOUND, "District not found".to_string()),
-            AppError::ServiceUnavailable => (
-                StatusCode::GATEWAY_TIMEOUT,
-                "Service temporarily unavailable".to_string(),
-            ),
-            AppError::InvalidUrl(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::PdfError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        let status = match &self {
+            AppError::DistrictNotFound => StatusCode::NOT_FOUND,
+            AppError::ServiceUnavailable => StatusCode::GATEWAY_TIMEOUT,
+            AppError::InvalidUrl(_) => StatusCode::BAD_REQUEST,
+            AppError::PdfNotFound(_) | AppError::PdfError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        (status, Json(json!({ "detail": message }))).into_response()
+        (status, Json(json!({ "detail": self.to_string() }))).into_response()
     }
 }

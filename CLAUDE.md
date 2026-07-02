@@ -20,14 +20,17 @@ Tests require the fixture PDF at `tests/fixtures/lk_rosenheim_2026.pdf` (already
 
 | File | Responsibility |
 |------|---------------|
-| `src/main.rs` | Binary entry point: loads `plans.yaml`, calls `parse_forwarded_allow_ips`, binds to `BIND_ADDR` |
-| `src/lib.rs` | `build_router`, OpenAPI spec (`ApiDoc`), module re-exports |
-| `src/middleware.rs` | `resolve_client_ip` (IP-resolution middleware), `make_request_span` + `log_response` (TraceLayer callbacks) |
-| `src/state.rs` | `AppState` (plans + two DashMap caches + reqwest `Client`), `ResolvedClientIp` extension type |
-| `src/handlers.rs` | `health_check`, `lk_rosenheim_handler`, `download_pdf`, `dates_to_iso`; utoipa annotations |
+| `src/main.rs` | Binary entry point: loads `plans.yaml`, calls `parse_forwarded_allow_ips`, binds to `BIND_ADDR`; `healthcheck` subcommand (`run_healthcheck`) |
+| `src/lib.rs` | Module declarations + re-exports only (`AppState`, `ResolvedClientIp`, `build_router`, `ApiDoc`) |
+| `src/router.rs` | `build_router` (routes, Swagger UI, middleware/trace layering) |
+| `src/openapi.rs` | OpenAPI spec (`ApiDoc`, utoipa) |
+| `src/middleware.rs` | `resolve_client_ip` (IP-resolution middleware), `ResolvedClientIp` extension type, `make_request_span` + `log_response` (TraceLayer callbacks) |
+| `src/state.rs` | `AppState` (plans + two DashMap caches + reqwest `Client`) |
+| `src/handlers.rs` | `health_check`, `lk_rosenheim_handler`, DTOs, `dates_to_iso`; utoipa annotations |
+| `src/download.rs` | `download_pdf` (HTTP fetch + validation + PDF byte cache) |
 | `src/pdf_parser.rs` | PDF → date extraction (public API: `get_dates`, `debug_extract`) |
 | `src/config.rs` | `Plan` struct, `load_plans(path)`, `parse_forwarded_allow_ips(raw)` |
-| `src/errors.rs` | `AppError` enum → `IntoResponse` (404/400/500/504) |
+| `src/errors.rs` | `AppError` enum (thiserror) → `IntoResponse` (404/400/500/504) |
 | `plans.yaml` | PDF URLs and page ranges (single source of truth) |
 
 `AppState` holds `Arc<Vec<Plan>>`, two `Arc<DashMap<_>>` caches (PDF bytes keyed by URL; dates keyed by district name), and a `reqwest::Client` with a 30 s timeout. All caches are populated lazily on first request.
@@ -43,7 +46,7 @@ Tests require the fixture PDF at `tests/fixtures/lk_rosenheim_2026.pdf` (already
 
 ## Middleware & Request Pipeline
 
-Layer order in `build_router`: `ip_middleware` is added last (`.layer()`) so it is outermost — it runs **before** `TraceLayer`, ensuring the span already has `client_ip` populated. The middleware logic lives in `src/middleware.rs`.
+Layer order in `build_router` (`src/router.rs`): `ip_middleware` is added last (`.layer()`) so it is outermost — it runs **before** `TraceLayer`, ensuring the span already has `client_ip` populated. The middleware logic lives in `src/middleware.rs`.
 
 1. **`ip_middleware`** — `middleware::resolve_client_ip`, wired up via `axum::middleware::from_fn_with_state` with the `FORWARDED_ALLOW_IPS` allowlist as state. If the connecting peer is in the allowlist, the leftmost `X-Forwarded-For` entry is used; otherwise the socket IP is used. Falls back to `127.0.0.1` in unit tests (no `ConnectInfo`). Inserts `ResolvedClientIp` extension.
 2. **`TraceLayer`** — uses `middleware::make_request_span` to create a span per request (method, URI, client_ip) and `middleware::log_response` to log response status + latency_ms. Most requests use an `info_span!`/INFO; `/health` requests use a `trace_span!` and are logged at TRACE only (high-frequency health checks would otherwise flood the logs). `log_response` recovers the level from the span's metadata.
@@ -70,26 +73,26 @@ Internal algorithm in `src/pdf_parser.rs` (backed by `pdf_oxide`):
 
 50 districts are supported (see `DISTRICTS` constant in `tests/test_pdf_parser.rs`).
 
-## `download_pdf` Validation (in `src/handlers.rs`)
+## `download_pdf` Validation (in `src/download.rs`)
 
 1. Check `pdf_cache` first (returns clone if hit).
 2. Reject URLs that don't end with `.pdf` (case-insensitive) → `AppError::InvalidUrl`.
-3. HTTP GET; timeout → `ServiceUnavailable`; 404 → `PdfError("not found")`; non-2xx → `PdfError`.
+3. HTTP GET; timeout → `ServiceUnavailable`; 404 → `PdfNotFound`; non-2xx → `PdfError`.
 4. Validate `content-type: application/pdf` → `AppError::InvalidUrl` if absent.
 5. Cache bytes and return.
 
-In `lk_rosenheim_handler`, a `PdfError` whose message contains `"not found"` is treated as a soft skip (`continue` to next plan); all other errors propagate immediately.
+In `lk_rosenheim_handler`, `PdfNotFound` and per-plan `DistrictNotFound` are soft skips (`continue` to the next plan — a district may live in a later plan's PDF); the final `all_dates.is_empty()` check turns "found nowhere" into a 404. All other errors propagate immediately.
 
 ## Test Coverage
 
 | Suite | File | Count |
 |-------|------|-------|
 | PDF parser unit tests (50 districts + 4 error/utility) | `tests/test_pdf_parser.rs` | 54 |
-| API integration tests (incl. `download_pdf` HTTP paths via mockito) | `tests/test_api.rs` | 20 |
+| API integration tests (incl. `download_pdf` HTTP paths via mockito) | `tests/test_api.rs` | 21 |
 | Config tests (`load_plans`, `parse_forwarded_allow_ips`) | `tests/test_config.rs` | 10 |
 | Middleware tests (`resolve_client_ip` via mini-router, span/log helpers) | `tests/test_middleware.rs` | 8 |
 | `AppError::into_response` tests | `tests/test_errors.rs` | 4 |
-| `parse_date` inline unit tests | `src/pdf_parser.rs` (`#[cfg(test)]`) | 4 |
+| `parse_date` inline unit tests | `src/pdf_parser.rs` (`#[cfg(test)]`) | 5 |
 
 `cargo llvm-cov` line coverage is ~85 % (≈96 % excluding the `main.rs` server-bootstrap entrypoint). The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout→504 path is intentionally untested (fixed 30 s client timeout).
 
@@ -104,6 +107,7 @@ Note: `test_missing_district_parameter_returns_422` checks for `StatusCode::BAD_
 | `DistrictNotFound` | 404 |
 | `InvalidUrl(_)` | 400 |
 | `ServiceUnavailable` | 504 Gateway Timeout |
+| `PdfNotFound(_)` | 500 (but soft-skipped in the handler, see above) |
 | `PdfError(_)` | 500 |
 
 Response body is always `{"detail": "<message>"}`.

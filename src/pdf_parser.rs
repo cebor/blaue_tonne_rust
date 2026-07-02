@@ -33,6 +33,24 @@ fn spans_to_rows(spans: &[TextSpan]) -> Vec<Vec<String>> {
     rows.into_iter().map(|(_, texts)| texts).collect()
 }
 
+/// Parse comma-separated 1-based page numbers (e.g. `"1,2"`) into 0-based
+/// indices for `pdf_oxide`. Invalid entries are ignored.
+fn parse_page_numbers(pages: &str) -> Vec<usize> {
+    pages
+        .split(',')
+        .filter_map(|s| s.trim().parse::<usize>().ok())
+        .filter_map(|n| n.checked_sub(1))
+        .collect()
+}
+
+/// Extract the reconstructed table rows of one page.
+fn extract_rows(doc: &PdfDocument, page_idx: usize) -> Result<Vec<Vec<String>>, AppError> {
+    let spans = doc
+        .extract_spans(page_idx)
+        .map_err(|e| AppError::PdfError(e.to_string()))?;
+    Ok(spans_to_rows(&spans))
+}
+
 // ---------------------------------------------------------------------------
 // Date parsing
 // ---------------------------------------------------------------------------
@@ -41,11 +59,10 @@ fn spans_to_rows(spans: &[TextSpan]) -> Vec<Vec<String>> {
 /// in "dd.mm.yy" format (e.g. "06.01.26" or "Mo. 06.01.26" → "06.01.26").
 fn parse_date(cell: &str) -> Option<NaiveDate> {
     let cell = cell.trim();
-    if cell.len() < DATE_LENGTH {
-        return None;
-    }
-    let date_str = &cell[cell.len() - DATE_LENGTH..];
-    NaiveDate::parse_from_str(date_str, "%d.%m.%y").ok()
+    // Byte offset of the 8th-from-last character; None if fewer than 8 chars.
+    // Slicing by chars (not bytes) keeps multi-byte text like "Größe" safe.
+    let start = cell.char_indices().rev().nth(DATE_LENGTH - 1)?.0;
+    NaiveDate::parse_from_str(&cell[start..], "%d.%m.%y").ok()
 }
 
 /// Parse all dates from a row of cells.
@@ -73,22 +90,12 @@ pub fn get_dates(
     let doc =
         PdfDocument::from_bytes(pdf_bytes.to_vec()).map_err(|e| AppError::PdfError(e.to_string()))?;
 
-    // pages are 1-based in plans.yaml; extract_tables uses 0-based indices
-    let page_numbers: Vec<usize> = pages
-        .split(',')
-        .filter_map(|s| s.trim().parse::<usize>().ok())
-        .filter_map(|n| n.checked_sub(1))
-        .collect();
-
     // District names in the PDF may be stored as character fragments, so we
     // concatenate all cells in a row and compare without spaces.
     let district_key: String = district.chars().filter(|c| !c.is_whitespace()).collect();
 
-    for page_idx in page_numbers {
-        let spans = doc
-            .extract_spans(page_idx)
-            .map_err(|e| AppError::PdfError(e.to_string()))?;
-        let rows = spans_to_rows(&spans);
+    for page_idx in parse_page_numbers(pages) {
+        let rows = extract_rows(&doc, page_idx)?;
 
         for (row_idx, row) in rows.iter().enumerate() {
             let row_text: String = row
@@ -122,17 +129,9 @@ pub fn get_dates(
 pub fn debug_extract(pdf_bytes: &[u8], pages: &str) -> Result<Vec<Vec<String>>, AppError> {
     let doc = PdfDocument::from_bytes(pdf_bytes.to_vec())
         .map_err(|e| AppError::PdfError(e.to_string()))?;
-    let page_indices: Vec<usize> = pages
-        .split(',')
-        .filter_map(|s| s.trim().parse::<usize>().ok())
-        .filter_map(|n| n.checked_sub(1))
-        .collect();
     let mut all_rows = Vec::new();
-    for page_idx in page_indices {
-        let spans = doc
-            .extract_spans(page_idx)
-            .map_err(|e| AppError::PdfError(e.to_string()))?;
-        all_rows.extend(spans_to_rows(&spans));
+    for page_idx in parse_page_numbers(pages) {
+        all_rows.extend(extract_rows(&doc, page_idx)?);
     }
     Ok(all_rows)
 }
@@ -166,5 +165,13 @@ mod tests {
     #[test]
     fn test_parse_date_invalid() {
         assert_eq!(parse_date("Ort Name"), None);
+    }
+
+    #[test]
+    fn test_parse_date_multibyte_no_panic() {
+        // Multi-byte chars within the last 8 bytes must not panic
+        // (byte-based slicing would split "ö"/"ß" mid-character).
+        assert_eq!(parse_date("Größenwahn"), None);
+        assert_eq!(parse_date("Söchtenau"), None);
     }
 }

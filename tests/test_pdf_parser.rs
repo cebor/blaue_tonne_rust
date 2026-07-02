@@ -11,88 +11,84 @@ fn fixture_pdf() -> Vec<u8> {
 
 const PLANS_PAGES: &str = "1,2";
 
-const DISTRICTS: &[&str] = &[
-    "Albaching", "Amerang", "Aschau", "Babensham", "Bad Aibling", "Bad Endorf",
-    "Bad Feilnbach", "Bernau", "Brannenburg", "Breitbrunn", "Bruckmühl 1", "Bruckmühl 2",
-    "Edling", "Eggstätt", "Eiselfing", "Feldkirchen 1", "Feldkirchen 2", "Flintsbach",
-    "Frasdorf", "Griesstätt", "Großkarolinenfeld 1", "Großkarolinenfeld 2", "Gstadt",
-    "Halfing", "Höslwang", "Kiefersfelden", "Kolbermoor", "Neubeuern", "Nußdorf am Inn",
-    "Oberaudorf", "Pfaffing", "Prien a. Chiemsee", "Prutting", "Ramerberg", "Raubling 1",
-    "Raubling 2", "Raubling 3", "Riedering", "Rimsting", "Rohrdorf", "Rott am Inn",
-    "Samerberg", "Schechen", "Schonstett", "Soyen", "Stephanskirchen 1", "Stephanskirchen 2",
-    "Söchtenau", "Tuntenhausen", "Vogtareuth",
-];
-
 // ---------------------------------------------------------------------------
-// Happy-path: every known district must yield at least one date
+// Happy-path: every known district must yield at least one date.
+// The macro generates one #[test] per district AND the DISTRICTS constant,
+// so the district list exists exactly once.
 // ---------------------------------------------------------------------------
 
-macro_rules! district_test {
-    ($name:ident, $district:expr) => {
-        #[test]
-        fn $name() {
-            let pdf = fixture_pdf();
-            let dates = get_dates(&pdf, PLANS_PAGES, $district)
-                .unwrap_or_else(|e| panic!("district '{}' failed: {:?}", $district, e));
-            assert!(
-                !dates.is_empty(),
-                "no dates returned for district '{}'",
-                $district
-            );
-        }
+macro_rules! district_tests {
+    ($(($name:ident, $district:expr)),* $(,)?) => {
+        const DISTRICTS: &[&str] = &[$($district),*];
+
+        $(
+            #[test]
+            fn $name() {
+                let pdf = fixture_pdf();
+                let dates = get_dates(&pdf, PLANS_PAGES, $district)
+                    .unwrap_or_else(|e| panic!("district '{}' failed: {:?}", $district, e));
+                assert!(
+                    !dates.is_empty(),
+                    "no dates returned for district '{}'",
+                    $district
+                );
+            }
+        )*
     };
 }
 
-district_test!(test_district_albaching, "Albaching");
-district_test!(test_district_amerang, "Amerang");
-district_test!(test_district_aschau, "Aschau");
-district_test!(test_district_babensham, "Babensham");
-district_test!(test_district_bad_aibling, "Bad Aibling");
-district_test!(test_district_bad_endorf, "Bad Endorf");
-district_test!(test_district_bad_feilnbach, "Bad Feilnbach");
-district_test!(test_district_bernau, "Bernau");
-district_test!(test_district_brannenburg, "Brannenburg");
-district_test!(test_district_breitbrunn, "Breitbrunn");
-district_test!(test_district_bruckmuhl_1, "Bruckmühl 1");
-district_test!(test_district_bruckmuhl_2, "Bruckmühl 2");
-district_test!(test_district_edling, "Edling");
-district_test!(test_district_eggstatt, "Eggstätt");
-district_test!(test_district_eiselfing, "Eiselfing");
-district_test!(test_district_feldkirchen_1, "Feldkirchen 1");
-district_test!(test_district_feldkirchen_2, "Feldkirchen 2");
-district_test!(test_district_flintsbach, "Flintsbach");
-district_test!(test_district_frasdorf, "Frasdorf");
-district_test!(test_district_griesstatt, "Griesstätt");
-district_test!(test_district_grosskarolinenfeld_1, "Großkarolinenfeld 1");
-district_test!(test_district_grosskarolinenfeld_2, "Großkarolinenfeld 2");
-district_test!(test_district_gstadt, "Gstadt");
-district_test!(test_district_halfing, "Halfing");
-district_test!(test_district_hoslwang, "Höslwang");
-district_test!(test_district_kiefersfelden, "Kiefersfelden");
-district_test!(test_district_kolbermoor, "Kolbermoor");
-district_test!(test_district_neubeuern, "Neubeuern");
-district_test!(test_district_nussdorf, "Nußdorf am Inn");
-district_test!(test_district_oberaudorf, "Oberaudorf");
-district_test!(test_district_pfaffing, "Pfaffing");
-district_test!(test_district_prien, "Prien a. Chiemsee");
-district_test!(test_district_prutting, "Prutting");
-district_test!(test_district_ramerberg, "Ramerberg");
-district_test!(test_district_raubling_1, "Raubling 1");
-district_test!(test_district_raubling_2, "Raubling 2");
-district_test!(test_district_raubling_3, "Raubling 3");
-district_test!(test_district_riedering, "Riedering");
-district_test!(test_district_rimsting, "Rimsting");
-district_test!(test_district_rohrdorf, "Rohrdorf");
-district_test!(test_district_rott, "Rott am Inn");
-district_test!(test_district_samerberg, "Samerberg");
-district_test!(test_district_schechen, "Schechen");
-district_test!(test_district_schonstett, "Schonstett");
-district_test!(test_district_soyen, "Soyen");
-district_test!(test_district_stephanskirchen_1, "Stephanskirchen 1");
-district_test!(test_district_stephanskirchen_2, "Stephanskirchen 2");
-district_test!(test_district_soechtenau, "Söchtenau");
-district_test!(test_district_tuntenhausen, "Tuntenhausen");
-district_test!(test_district_vogtareuth, "Vogtareuth");
+district_tests! {
+    (test_district_albaching, "Albaching"),
+    (test_district_amerang, "Amerang"),
+    (test_district_aschau, "Aschau"),
+    (test_district_babensham, "Babensham"),
+    (test_district_bad_aibling, "Bad Aibling"),
+    (test_district_bad_endorf, "Bad Endorf"),
+    (test_district_bad_feilnbach, "Bad Feilnbach"),
+    (test_district_bernau, "Bernau"),
+    (test_district_brannenburg, "Brannenburg"),
+    (test_district_breitbrunn, "Breitbrunn"),
+    (test_district_bruckmuhl_1, "Bruckmühl 1"),
+    (test_district_bruckmuhl_2, "Bruckmühl 2"),
+    (test_district_edling, "Edling"),
+    (test_district_eggstatt, "Eggstätt"),
+    (test_district_eiselfing, "Eiselfing"),
+    (test_district_feldkirchen_1, "Feldkirchen 1"),
+    (test_district_feldkirchen_2, "Feldkirchen 2"),
+    (test_district_flintsbach, "Flintsbach"),
+    (test_district_frasdorf, "Frasdorf"),
+    (test_district_griesstatt, "Griesstätt"),
+    (test_district_grosskarolinenfeld_1, "Großkarolinenfeld 1"),
+    (test_district_grosskarolinenfeld_2, "Großkarolinenfeld 2"),
+    (test_district_gstadt, "Gstadt"),
+    (test_district_halfing, "Halfing"),
+    (test_district_hoslwang, "Höslwang"),
+    (test_district_kiefersfelden, "Kiefersfelden"),
+    (test_district_kolbermoor, "Kolbermoor"),
+    (test_district_neubeuern, "Neubeuern"),
+    (test_district_nussdorf, "Nußdorf am Inn"),
+    (test_district_oberaudorf, "Oberaudorf"),
+    (test_district_pfaffing, "Pfaffing"),
+    (test_district_prien, "Prien a. Chiemsee"),
+    (test_district_prutting, "Prutting"),
+    (test_district_ramerberg, "Ramerberg"),
+    (test_district_raubling_1, "Raubling 1"),
+    (test_district_raubling_2, "Raubling 2"),
+    (test_district_raubling_3, "Raubling 3"),
+    (test_district_riedering, "Riedering"),
+    (test_district_rimsting, "Rimsting"),
+    (test_district_rohrdorf, "Rohrdorf"),
+    (test_district_rott, "Rott am Inn"),
+    (test_district_samerberg, "Samerberg"),
+    (test_district_schechen, "Schechen"),
+    (test_district_schonstett, "Schonstett"),
+    (test_district_soyen, "Soyen"),
+    (test_district_stephanskirchen_1, "Stephanskirchen 1"),
+    (test_district_stephanskirchen_2, "Stephanskirchen 2"),
+    (test_district_soechtenau, "Söchtenau"),
+    (test_district_tuntenhausen, "Tuntenhausen"),
+    (test_district_vogtareuth, "Vogtareuth"),
+}
 
 // ---------------------------------------------------------------------------
 // Error paths

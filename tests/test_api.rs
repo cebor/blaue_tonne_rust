@@ -299,6 +299,35 @@ api_district_test!(test_api_feldkirchen_2, "Feldkirchen 2");
 api_district_test!(test_api_raubling_3, "Raubling 3");
 
 // ---------------------------------------------------------------------------
+// Multi-plan: district missing in the first plan must not 404 — the handler
+// has to continue with the remaining plans
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_district_only_in_later_plan_is_found() {
+    let pdf = fixture_pdf_bytes();
+    // Premise: "Vogtareuth" is not on page 1 of the fixture, so plan 1 yields
+    // DistrictNotFound and only plan 2 (pages 1,2) can find it.
+    assert!(matches!(
+        blaue_tonne_rust::pdf_parser::get_dates(&pdf, "1", "Vogtareuth"),
+        Err(blaue_tonne_rust::errors::AppError::DistrictNotFound)
+    ));
+
+    let url = "https://fake.test/schedule.pdf".to_string();
+    let plans = vec![
+        Plan { url: url.clone(), pages: "1".to_string() },
+        Plan { url: url.clone(), pages: "1,2".to_string() },
+    ];
+    let state = AppState::new(plans);
+    state.pdf_cache.insert(url, pdf);
+
+    let response = get(state, "/lk_rosenheim?district=Vogtareuth").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_to_json(response).await;
+    assert!(!body.as_array().unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------
 // download_pdf: full real fetch path via mockito (serves the fixture PDF)
 // ---------------------------------------------------------------------------
 
@@ -432,14 +461,16 @@ async fn test_pdf_url_wrong_content_type_returns_400() {
 }
 
 // ---------------------------------------------------------------------------
-// download_pdf: connection error (no server) → 500 PdfError
+// download_pdf: connection error (unresolvable host) → 500 PdfError
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_pdf_connection_error_returns_500() {
-    // Port 1 is reserved/unused → connection refused (not a timeout).
+    // ".invalid" never resolves (RFC 2606) → immediate DNS/send error, not a
+    // timeout. (A closed port is not reliable here: some environments drop
+    // instead of refusing, which turns the test into a 30 s timeout / 504.)
     let plan = Plan {
-        url: "http://127.0.0.1:1/schedule.pdf".to_string(),
+        url: "http://nonexistent.invalid/schedule.pdf".to_string(),
         pages: "1".to_string(),
     };
     let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;

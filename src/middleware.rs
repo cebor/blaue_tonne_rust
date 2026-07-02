@@ -10,7 +10,9 @@ use axum::response::Response;
 use ipnet::IpNet;
 use tracing::Span;
 
-use crate::state::ResolvedClientIp;
+/// Resolved client IP, inserted as a request extension by [`resolve_client_ip`].
+#[derive(Clone, Copy)]
+pub struct ResolvedClientIp(pub IpAddr);
 
 /// Resolve the real client IP and insert it as a [`ResolvedClientIp`] extension.
 ///

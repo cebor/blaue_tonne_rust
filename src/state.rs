@@ -1,4 +1,3 @@
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -8,17 +7,7 @@ use reqwest::Client;
 
 use crate::config::Plan;
 
-// ---------------------------------------------------------------------------
-// Extension type: resolved client IP (set by IP-resolution middleware)
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Copy)]
-pub struct ResolvedClientIp(pub IpAddr);
-
-// ---------------------------------------------------------------------------
-// App state (public so integration tests can build it)
-// ---------------------------------------------------------------------------
-
+/// Shared application state (public so integration tests can build it).
 #[derive(Clone)]
 pub struct AppState {
     pub plans: Arc<Vec<Plan>>,

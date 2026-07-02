@@ -7,19 +7,28 @@ use blaue_tonne_rust::AppState;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
+
+fn bind_addr() -> String {
+    std::env::var("BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string())
+}
+
+/// `blaue_tonne_rust healthcheck` performs a GET on /health and exits with
+/// code 0 (healthy) or 1. Used by the Docker HEALTHCHECK: the distroless
+/// runtime image has neither a shell nor curl.
+async fn run_healthcheck() -> ! {
+    let url = format!("http://{}/health", bind_addr().replace("0.0.0.0", "127.0.0.1"));
+    let ok = reqwest::get(&url)
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+    std::process::exit(if ok { 0 } else { 1 });
+}
+
 #[tokio::main]
 async fn main() {
-    // `blaue_tonne_rust healthcheck` performs a GET on /health and exits with
-    // code 0 (healthy) or 1. Used by the Docker HEALTHCHECK: the distroless
-    // runtime image has neither a shell nor curl.
     if std::env::args().nth(1).as_deref() == Some("healthcheck") {
-        let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
-        let url = format!("http://{}/health", addr.replace("0.0.0.0", "127.0.0.1"));
-        let ok = reqwest::get(&url)
-            .await
-            .map(|r| r.status().is_success())
-            .unwrap_or(false);
-        std::process::exit(if ok { 0 } else { 1 });
+        run_healthcheck().await;
     }
 
     // `RUST_LOG` fully controls filtering when set (so e.g.
@@ -60,7 +69,7 @@ async fn main() {
     let state = AppState::new(plans);
     let app = build_router(state, forwarded_allow_ips);
 
-    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+    let bind_addr = bind_addr();
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .expect("failed to bind");

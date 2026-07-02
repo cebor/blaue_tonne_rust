@@ -13,17 +13,23 @@ Axum service that extracts waste collection dates from PDF schedules and exposes
 ```
 blaue_tonne_rust/
 ├── src/
-│   ├── main.rs                   # Binary entry point (server setup, config loading)
-│   ├── lib.rs                    # Router builder, OpenAPI spec, module re-exports
+│   ├── main.rs                   # Binary entry point (server setup, healthcheck subcommand)
+│   ├── lib.rs                    # Module declarations and re-exports
+│   ├── router.rs                 # Router builder (routes, Swagger UI, middleware layering)
+│   ├── openapi.rs                # OpenAPI spec (utoipa ApiDoc)
 │   ├── middleware.rs             # Client-IP resolution middleware + TraceLayer callbacks
-│   ├── state.rs                  # AppState (DashMap caches, reqwest client), ResolvedClientIp
+│   ├── state.rs                  # AppState (DashMap caches, reqwest client)
 │   ├── handlers.rs               # HTTP handlers, utoipa annotations
+│   ├── download.rs               # PDF download with validation and caching
 │   ├── config.rs                 # YAML config loading
 │   ├── errors.rs                 # AppError enum with IntoResponse
 │   └── pdf_parser.rs             # PDF table extraction and date parsing
 ├── tests/
 │   ├── test_api.rs               # Integration tests for HTTP endpoints
 │   ├── test_pdf_parser.rs        # Unit tests for PDF parsing
+│   ├── test_config.rs            # Config loading / allowlist parsing tests
+│   ├── test_middleware.rs        # Client-IP middleware tests
+│   ├── test_errors.rs            # AppError → HTTP response tests
 │   └── fixtures/
 │       └── lk_rosenheim_2026.pdf
 ├── plans.yaml                    # Configuration: PDF URLs and page ranges
@@ -117,8 +123,9 @@ cargo test -- --nocapture
 
 **Test coverage:**
 - 54 parametrized district tests verifying date extraction from the fixture PDF
-- 12 API integration tests (health, caching, error responses, mock HTTP server)
-- 4 unit tests for internal parsing helpers
+- 21 API integration tests (health, caching, error responses, mock HTTP server)
+- 10 config tests, 8 middleware tests, 4 error-response tests
+- 5 inline unit tests for internal parsing helpers
 
 ### Docker
 
