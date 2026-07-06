@@ -62,9 +62,11 @@ clippy:
     - rustup component add clippy
     - cargo install gitlab_clippy
   script:
+    # Generate the report first (does not fail on warnings), then run the gate
+    - cargo clippy --all-targets --all-features --message-format=json 2>/dev/null | gitlab-clippy > gl-code-quality-report.json
     - cargo clippy --all-targets --all-features -- -D warnings
-    - cargo clippy --message-format=json 2>/dev/null | gitlab-clippy > gl-code-quality-report.json
   artifacts:
+    when: always
     reports:
       codequality: gl-code-quality-report.json
   tags:
