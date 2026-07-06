@@ -43,7 +43,7 @@ build:
     - docker push $IMAGE_LATEST
     # - docker push $IMAGE_SHA
   tags:
-    - dind
+    - local
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: on_success
@@ -80,6 +80,8 @@ test:
       coverage_report:
         coverage_format: cobertura
         path: target/llvm-cov-target/cobertura.xml
+  tags:
+    - local
 
 # ── Security Scans ────────────────────────────────────────────────────────────
 
