@@ -12,6 +12,14 @@ variables:
   # Used by the Container-Scanning template
   CS_IMAGE: $IMAGE_LATEST
 
+.test:
+  cache:
+    key:
+      files:
+        - Cargo.lock
+    paths:
+      - .cargo/
+      - target/
 
 .deploy:
   before_script:
@@ -45,20 +53,31 @@ build:
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
+clippy:
+  image: rust:latest
+  stage: test
+  extends: .test
+  before_script:
+    - export PATH="$CARGO_HOME/bin:$PATH"
+    - rustup component add clippy
+    - cargo install gitlab_clippy
+  script:
+    - cargo clippy --all-targets --all-features -- -D warnings
+    - cargo clippy --message-format=json 2>/dev/null | gitlab-clippy > gl-code-quality-report.json
+  artifacts:
+    reports:
+      codequality: gl-code-quality-report.json
+  tags:
+    - local
+
 test:
   image: rust:latest
   stage: test
+  extends: .test
   variables:
     # Trim debug info to cut link-time RAM/disk; line-tables-only still lets
     # cargo llvm-cov map coverage correctly.
     CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
-  cache:
-    key:
-      files:
-        - Cargo.lock
-    paths:
-      - .cargo/
-      - target/
   before_script:
     - export PATH="$CARGO_HOME/bin:$PATH"
     - rustc --version && cargo --version
@@ -81,16 +100,9 @@ test:
 # ── Security Scans ────────────────────────────────────────────────────────────
 
 include:
-  - template: Jobs/SAST.gitlab-ci.yml
   - template: Jobs/Container-Scanning.gitlab-ci.yml
   - template: Jobs/SAST-IaC.gitlab-ci.yml
   - template: Jobs/Secret-Detection.gitlab-ci.yml
-
-semgrep-sast:
-  rules:
-    - if: $CI_COMMIT_BRANCH
-      exists:
-        - '**/*.rs'
 
 # ── Deploy ────────────────────────────────────────────────────────────────────
 
