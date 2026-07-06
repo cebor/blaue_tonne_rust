@@ -86,6 +86,12 @@ include:
   - template: Jobs/SAST-IaC.gitlab-ci.yml
   - template: Jobs/Secret-Detection.gitlab-ci.yml
 
+semgrep-sast:
+  rules:
+    - if: $CI_COMMIT_BRANCH
+      exists:
+        - '**/*.rs'
+
 # ── Deploy ────────────────────────────────────────────────────────────────────
 
 deploy:
