@@ -34,7 +34,7 @@ build:
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
   script:
-    - docker build --build-arg -t $IMAGE_LATEST -t $IMAGE_SHA .
+    - docker build -t $IMAGE_LATEST -t $IMAGE_SHA .
     - docker push $IMAGE_LATEST
     # - docker push $IMAGE_SHA
   tags:
