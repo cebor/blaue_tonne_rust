@@ -128,6 +128,7 @@ Four-stage build (`cargo-chef`): `chef` base (`rust:1-slim-trixie` + `cargo-chef
 
 ## Key Conventions
 
+- **All code comments must be in English** — never write German comments, even when the conversation is in German.
 - **Edition 2024** — requires Rust ≥ 1.85.
 - No `unwrap()` in production paths; errors propagate via `AppError`.
 - Date format from PDFs: `%d.%m.%y` (e.g. `06.01.26`). Returned as RFC 3339 UTC strings (`Utc.from_utc_datetime(&dt).to_rfc3339()`).
