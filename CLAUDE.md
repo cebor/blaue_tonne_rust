@@ -12,6 +12,9 @@ cargo build --release              # release build
 cargo test                         # all tests (unit + integration)
 cargo test --test test_pdf_parser  # PDF parser unit tests only
 cargo test --test test_api         # API integration tests only
+cargo test --test test_config      # config tests (load_plans, parse_forwarded_allow_ips)
+cargo test --test test_middleware  # middleware tests (resolve_client_ip, span/log helpers)
+cargo test --test test_errors      # AppError::into_response tests
 ```
 
 Tests require the fixture PDF at `tests/fixtures/lk_rosenheim_2026.pdf` (already committed).
