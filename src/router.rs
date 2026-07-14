@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use ipnet::IpNet;
 use tower_http::trace::{DefaultOnRequest, TraceLayer};
 use tracing::Level;
@@ -29,7 +29,11 @@ pub fn build_router(state: AppState, forwarded_allow_ips: Vec<IpNet>) -> Router 
         .on_response(middleware::log_response);
 
     Router::new()
-        .merge(SwaggerUi::new("/docs").url(api_doc_url, ApiDoc::openapi()).config(api_doc_config))
+        .merge(
+            SwaggerUi::new("/docs")
+                .url(api_doc_url, ApiDoc::openapi())
+                .config(api_doc_config),
+        )
         .route("/health", get(handlers::health_check))
         .route("/lk_rosenheim", get(handlers::lk_rosenheim_handler))
         // Layer order with Router::layer: last `.layer()` call = outermost (runs first).

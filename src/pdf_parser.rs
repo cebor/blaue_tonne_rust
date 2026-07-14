@@ -1,6 +1,6 @@
 use chrono::NaiveDate;
-use pdf_oxide::layout::TextSpan;
 use pdf_oxide::PdfDocument;
+use pdf_oxide::layout::TextSpan;
 
 use crate::errors::AppError;
 
@@ -16,7 +16,8 @@ const Y_TOLERANCE: f32 = 5.0;
 fn spans_to_rows(spans: &[TextSpan]) -> Vec<Vec<String>> {
     let mut sorted: Vec<&TextSpan> = spans.iter().collect();
     sorted.sort_by(|a, b| {
-        b.bbox.y
+        b.bbox
+            .y
             .total_cmp(&a.bbox.y)
             .then(a.bbox.x.total_cmp(&b.bbox.x))
     });
@@ -24,10 +25,11 @@ fn spans_to_rows(spans: &[TextSpan]) -> Vec<Vec<String>> {
     let mut rows: Vec<(f32, Vec<String>)> = Vec::new();
     for span in sorted {
         if let Some(last) = rows.last_mut()
-            && (span.bbox.y - last.0).abs() <= Y_TOLERANCE {
-                last.1.push(span.text.clone());
-                continue;
-            }
+            && (span.bbox.y - last.0).abs() <= Y_TOLERANCE
+        {
+            last.1.push(span.text.clone());
+            continue;
+        }
         rows.push((span.bbox.y, vec![span.text.clone()]));
     }
     rows.into_iter().map(|(_, texts)| texts).collect()
@@ -87,8 +89,8 @@ pub fn get_dates(
     pages: &str,
     district: &str,
 ) -> Result<Vec<NaiveDate>, AppError> {
-    let doc =
-        PdfDocument::from_bytes(pdf_bytes.to_vec()).map_err(|e| AppError::PdfError(e.to_string()))?;
+    let doc = PdfDocument::from_bytes(pdf_bytes.to_vec())
+        .map_err(|e| AppError::PdfError(e.to_string()))?;
 
     // District names in the PDF may be stored as character fragments, so we
     // concatenate all cells in a row and compare without spaces.
@@ -107,9 +109,10 @@ pub fn get_dates(
                 let mut dates: Vec<NaiveDate> = Vec::new();
                 // dates row BEFORE the name row (first half of the year)
                 if row_idx > 0
-                    && let Some(prev_row) = rows.get(row_idx - 1) {
-                        dates.extend(parse_dates_from_row(prev_row));
-                    }
+                    && let Some(prev_row) = rows.get(row_idx - 1)
+                {
+                    dates.extend(parse_dates_from_row(prev_row));
+                }
                 // dates row AFTER the name row (second half of the year)
                 if let Some(next_row) = rows.get(row_idx + 1) {
                     dates.extend(parse_dates_from_row(next_row));

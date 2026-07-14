@@ -1,6 +1,6 @@
 use axum::{
-    extract::{Query, State},
     Json,
+    extract::{Query, State},
 };
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,9 @@ pub struct DistrictQuery {
     tag = "health"
 )]
 pub async fn health_check() -> Json<HealthResponse> {
-    Json(HealthResponse { status: "healthy".to_string() })
+    Json(HealthResponse {
+        status: "healthy".to_string(),
+    })
 }
 
 fn dates_to_iso(dates: &[NaiveDate]) -> Vec<String> {
@@ -77,12 +79,11 @@ pub async fn lk_rosenheim_handler(
     let mut all_dates: Vec<NaiveDate> = Vec::new();
 
     for plan in state.plans.iter() {
-        let pdf_bytes =
-            match download_pdf(&state.http_client, &state.pdf_cache, &plan.url).await {
-                Ok(b) => b,
-                Err(AppError::PdfNotFound(_)) => continue,
-                Err(e) => return Err(e),
-            };
+        let pdf_bytes = match download_pdf(&state.http_client, &state.pdf_cache, &plan.url).await {
+            Ok(b) => b,
+            Err(AppError::PdfNotFound(_)) => continue,
+            Err(e) => return Err(e),
+        };
 
         match get_dates(&pdf_bytes, &plan.pages, district) {
             Ok(dates) => all_dates.extend(dates),
@@ -97,6 +98,8 @@ pub async fn lk_rosenheim_handler(
         return Err(AppError::DistrictNotFound);
     }
 
-    state.dates_cache.insert(district.clone(), all_dates.clone());
+    state
+        .dates_cache
+        .insert(district.clone(), all_dates.clone());
     Ok(Json(dates_to_iso(&all_dates)))
 }

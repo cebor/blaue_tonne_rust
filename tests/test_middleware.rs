@@ -3,21 +3,21 @@ use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use axum::{
+    Extension, Router,
     body::Body,
     extract::ConnectInfo,
     http::Request,
     middleware::from_fn_with_state,
     response::{IntoResponse, Response},
     routing::get,
-    Extension, Router,
 };
 use http_body_util::BodyExt;
 use ipnet::IpNet;
 use tower::ServiceExt;
 use tracing::Level;
 
-use blaue_tonne_rust::middleware::{log_response, make_request_span, resolve_client_ip};
 use blaue_tonne_rust::ResolvedClientIp;
+use blaue_tonne_rust::middleware::{log_response, make_request_span, resolve_client_ip};
 
 // ---------------------------------------------------------------------------
 // resolve_client_ip — exercised via a mini-router that echoes the resolved IP

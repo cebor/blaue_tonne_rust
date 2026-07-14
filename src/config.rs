@@ -35,7 +35,9 @@ pub fn parse_forwarded_allow_ips(raw: &str) -> Vec<IpNet> {
             // Accept both plain IPs ("127.0.0.1") and CIDR notation ("10.0.0.0/8").
             s.parse::<IpNet>()
                 .or_else(|_| s.parse::<std::net::IpAddr>().map(IpNet::from))
-                .map_err(|e| tracing::warn!("Ignoring invalid FORWARDED_ALLOW_IPS entry {s:?}: {e}"))
+                .map_err(|e| {
+                    tracing::warn!("Ignoring invalid FORWARDED_ALLOW_IPS entry {s:?}: {e}")
+                })
                 .ok()
         })
         .collect()

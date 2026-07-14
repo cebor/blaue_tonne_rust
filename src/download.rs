@@ -22,17 +22,13 @@ pub async fn download_pdf(
         ));
     }
 
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_timeout() {
-                AppError::ServiceUnavailable
-            } else {
-                AppError::PdfError(e.to_string())
-            }
-        })?;
+    let response = client.get(url).send().await.map_err(|e| {
+        if e.is_timeout() {
+            AppError::ServiceUnavailable
+        } else {
+            AppError::PdfError(e.to_string())
+        }
+    })?;
 
     let status = response.status();
     if status == StatusCode::NOT_FOUND {

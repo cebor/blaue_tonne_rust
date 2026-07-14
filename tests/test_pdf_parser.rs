@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use blaue_tonne_rust::pdf_parser::get_dates;
 use blaue_tonne_rust::errors::AppError;
+use blaue_tonne_rust::pdf_parser::get_dates;
 
 fn fixture_pdf() -> Vec<u8> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/lk_rosenheim_2026.pdf");
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lk_rosenheim_2026.pdf");
     std::fs::read(&path).expect("fixture PDF not found")
 }
 

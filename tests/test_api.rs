@@ -9,7 +9,7 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use blaue_tonne_rust::config::Plan;
-use blaue_tonne_rust::{build_router, AppState};
+use blaue_tonne_rust::{AppState, build_router};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -70,14 +70,9 @@ async fn body_to_json(response: Response) -> serde_json::Value {
 
 async fn get(state: AppState, path: &str) -> Response {
     let app = build_router(state, vec![]);
-    app.oneshot(
-        Request::builder()
-            .uri(path)
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await
-    .unwrap()
+    app.oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +246,11 @@ async fn test_invalid_pdf_url_returns_400() {
         url: format!("{}/not-a-pdf", mock_server.url()),
         pages: "1".to_string(),
     };
-    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    let response = get(
+        AppState::new(vec![plan]),
+        "/lk_rosenheim?district=Kolbermoor",
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_to_json(response).await;
@@ -270,9 +269,8 @@ macro_rules! api_district_test {
     ($name:ident, $district:expr) => {
         #[tokio::test]
         async fn $name() {
-            let dates = fake_dates($district).unwrap_or_else(|| {
-                vec![chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()]
-            });
+            let dates = fake_dates($district)
+                .unwrap_or_else(|| vec![chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()]);
             let state = state_with_cached_dates($district, dates);
             let encoded = urlencoding::encode($district);
             let response = get(state, &format!("/lk_rosenheim?district={}", encoded)).await;
@@ -315,8 +313,14 @@ async fn test_district_only_in_later_plan_is_found() {
 
     let url = "https://fake.test/schedule.pdf".to_string();
     let plans = vec![
-        Plan { url: url.clone(), pages: "1".to_string() },
-        Plan { url: url.clone(), pages: "1,2".to_string() },
+        Plan {
+            url: url.clone(),
+            pages: "1".to_string(),
+        },
+        Plan {
+            url: url.clone(),
+            pages: "1,2".to_string(),
+        },
     ];
     let state = AppState::new(plans);
     state.pdf_cache.insert(url, pdf);
@@ -394,7 +398,11 @@ async fn test_pdf_404_is_soft_skipped() {
         url: format!("{}/missing.pdf", mock_server.url()),
         pages: "1".to_string(),
     };
-    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    let response = get(
+        AppState::new(vec![plan]),
+        "/lk_rosenheim?district=Kolbermoor",
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
@@ -415,7 +423,11 @@ async fn test_pdf_server_error_returns_500() {
         url: format!("{}/broken.pdf", mock_server.url()),
         pages: "1".to_string(),
     };
-    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    let response = get(
+        AppState::new(vec![plan]),
+        "/lk_rosenheim?district=Kolbermoor",
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
@@ -429,7 +441,11 @@ async fn test_non_pdf_url_returns_400() {
         url: "http://example.test/not-a-pdf-file".to_string(),
         pages: "1".to_string(),
     };
-    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    let response = get(
+        AppState::new(vec![plan]),
+        "/lk_rosenheim?district=Kolbermoor",
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_to_json(response).await;
     assert!(body["detail"].as_str().unwrap().contains("PDF"));
@@ -454,7 +470,11 @@ async fn test_pdf_url_wrong_content_type_returns_400() {
         url: format!("{}/fake.pdf", mock_server.url()),
         pages: "1".to_string(),
     };
-    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    let response = get(
+        AppState::new(vec![plan]),
+        "/lk_rosenheim?district=Kolbermoor",
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_to_json(response).await;
     assert!(body["detail"].as_str().unwrap().contains("valid PDF"));
@@ -473,7 +493,11 @@ async fn test_pdf_connection_error_returns_500() {
         url: "http://nonexistent.invalid/schedule.pdf".to_string(),
         pages: "1".to_string(),
     };
-    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    let response = get(
+        AppState::new(vec![plan]),
+        "/lk_rosenheim?district=Kolbermoor",
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
@@ -496,6 +520,10 @@ async fn test_corrupt_pdf_returns_500() {
         url: format!("{}/corrupt.pdf", mock_server.url()),
         pages: "1".to_string(),
     };
-    let response = get(AppState::new(vec![plan]), "/lk_rosenheim?district=Kolbermoor").await;
+    let response = get(
+        AppState::new(vec![plan]),
+        "/lk_rosenheim?district=Kolbermoor",
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }

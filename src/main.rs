@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use blaue_tonne_rust::AppState;
 use blaue_tonne_rust::build_router;
 use blaue_tonne_rust::config::{load_plans, parse_forwarded_allow_ips};
-use blaue_tonne_rust::AppState;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -17,7 +17,10 @@ fn bind_addr() -> String {
 /// code 0 (healthy) or 1. Used by the Docker HEALTHCHECK: the distroless
 /// runtime image has neither a shell nor curl.
 async fn run_healthcheck() -> ! {
-    let url = format!("http://{}/health", bind_addr().replace("0.0.0.0", "127.0.0.1"));
+    let url = format!(
+        "http://{}/health",
+        bind_addr().replace("0.0.0.0", "127.0.0.1")
+    );
     let ok = reqwest::get(&url)
         .await
         .map(|r| r.status().is_success())
@@ -41,9 +44,8 @@ async fn main() {
         )
         .init();
 
-    let plans_path = PathBuf::from(
-        std::env::var("PLANS_PATH").unwrap_or_else(|_| "plans.yaml".to_string()),
-    );
+    let plans_path =
+        PathBuf::from(std::env::var("PLANS_PATH").unwrap_or_else(|_| "plans.yaml".to_string()));
 
     // Comma-separated list of IPs/CIDRs whose X-Forwarded-For headers are trusted.
     // Use "*" to trust all proxies. Default: empty (X-Forwarded-For not trusted).
