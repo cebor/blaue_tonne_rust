@@ -53,6 +53,16 @@ build:
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
+fmt:
+  image: rust:latest
+  stage: test
+  before_script:
+    - rustup component add rustfmt
+  script:
+    - cargo fmt --all --check
+  tags:
+    - local
+
 clippy:
   image: rust:latest
   stage: test
