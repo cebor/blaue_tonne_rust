@@ -16,10 +16,6 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # ─── Stage 3: builder ─────────────────────────────────────────────────────────
 FROM chef AS builder
-# Cap cross-crate compile parallelism to reduce peak RAM (default is one rustc
-# job per CPU core). Applies to both `cargo chef cook` and `cargo build`.
-ARG CARGO_BUILD_JOBS=2
-ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
