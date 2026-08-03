@@ -6,46 +6,7 @@ See [README.md](README.md) for full project overview.
 
 ## Build & Test
 
-```bash
-cargo build                        # debug build
-cargo build --release              # release build
-cargo test                         # all tests (unit + integration)
-cargo test --test test_pdf_parser  # PDF parser unit tests only
-cargo test --test test_api         # API integration tests only
-cargo test --test test_config      # config tests (load_plans, parse_forwarded_allow_ips)
-cargo test --test test_middleware  # middleware tests (resolve_client_ip, span/log helpers)
-cargo test --test test_errors      # AppError::into_response tests
-```
-
 Tests require the fixture PDF at `tests/fixtures/lk_rosenheim_2026.pdf` (already committed).
-
-## Architecture
-
-| File | Responsibility |
-|------|---------------|
-| `src/main.rs` | Binary entry point: loads `plans.yaml`, calls `parse_forwarded_allow_ips`, binds to `BIND_ADDR`; `healthcheck` subcommand (`run_healthcheck`) |
-| `src/lib.rs` | Module declarations + re-exports only (`AppState`, `ResolvedClientIp`, `build_router`, `ApiDoc`) |
-| `src/router.rs` | `build_router` (routes, Swagger UI, middleware/trace layering) |
-| `src/openapi.rs` | OpenAPI spec (`ApiDoc`, utoipa) |
-| `src/middleware.rs` | `resolve_client_ip` (IP-resolution middleware), `ResolvedClientIp` extension type, `make_request_span` + `log_response` (TraceLayer callbacks) |
-| `src/state.rs` | `AppState` (plans + two DashMap caches + reqwest `Client`) |
-| `src/handlers.rs` | `health_check`, `lk_rosenheim_handler`, DTOs, `dates_to_iso`; utoipa annotations |
-| `src/download.rs` | `download_pdf` (HTTP fetch + validation + PDF byte cache) |
-| `src/pdf_parser.rs` | PDF → date extraction (public API: `get_dates`, `debug_extract`) |
-| `src/config.rs` | `Plan` struct, `load_plans(path)`, `parse_forwarded_allow_ips(raw)` |
-| `src/errors.rs` | `AppError` enum (thiserror) → `IntoResponse` (404/400/500/504) |
-| `plans.yaml` | PDF URLs and page ranges (single source of truth) |
-
-`AppState` holds `Arc<Vec<Plan>>`, two `Arc<DashMap<_>>` caches (PDF bytes keyed by URL; dates keyed by district name), and a `reqwest::Client` with a 30 s timeout. All caches are populated lazily on first request.
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Returns `{"status":"healthy"}` |
-| `GET` | `/lk_rosenheim?district=<name>` | RFC 3339 UTC dates array for the given district |
-| `GET` | `/docs` | Swagger UI (utoipa) |
-| `GET` | `/docs/openapi.json` | OpenAPI JSON spec |
 
 ## Middleware & Request Pipeline
 
@@ -67,35 +28,15 @@ Layer order in `build_router` (`src/router.rs`): `ip_middleware` is added last (
 
 District names in this PDF are rendered as character fragments (e.g. "Bad Aibling" → cells `["B","ad","A","ib","ling"]`). Matching strips whitespace from both the concatenated row text and the district name before comparing. Dates live on the row **before** and the row **after** the district name row.
 
-Internal algorithm in `src/pdf_parser.rs` (backed by `pdf_oxide`):
-1. `PdfDocument::extract_spans(page_idx)` returns `TextSpan`s, each with a `bbox` (`x`, `y`) and `text`.
-2. `spans_to_rows`: sort spans by Y descending (PDF Y increases upward), then X ascending; group consecutive spans into a row while their Y delta is `<= Y_TOLERANCE = 5.0` pts. Each row is a `Vec<String>` of span texts (no per-character X-gap splitting — `pdf_oxide` already returns coherent spans).
-3. `parse_date`: takes the last `DATE_LENGTH = 8` characters of a cell string and parses `%d.%m.%y` (e.g. `"Mo. 06.01.26"` → `06.01.26`).
-4. `get_dates` returns up to ~24 dates per district (the row before + the row after the district-name row).
-5. `debug_extract` (pub, `#[doc(hidden)]`) — returns `Result<Vec<Vec<String>>, AppError>` of reconstructed rows for debugging; used in `test_debug_extraction`.
+Row reconstruction in `src/pdf_parser.rs` sorts `pdf_oxide` spans by Y descending (PDF Y increases upward), then X ascending, grouping them into a row while the Y delta stays within `Y_TOLERANCE`. No per-character X-gap splitting is needed — `pdf_oxide` already returns coherent spans.
 
 50 districts are supported (see `DISTRICTS` constant in `tests/test_pdf_parser.rs`).
 
-## `download_pdf` Validation (in `src/download.rs`)
-
-1. Check `pdf_cache` first (returns clone if hit).
-2. Reject URLs that don't end with `.pdf` (case-insensitive) → `AppError::InvalidUrl`.
-3. HTTP GET; timeout → `ServiceUnavailable`; 404 → `PdfNotFound`; non-2xx → `PdfError`.
-4. Validate `content-type: application/pdf` → `AppError::InvalidUrl` if absent.
-5. Cache bytes and return.
+## Soft-skipped errors in the handler
 
 In `lk_rosenheim_handler`, `PdfNotFound` and per-plan `DistrictNotFound` are soft skips (`continue` to the next plan — a district may live in a later plan's PDF); the final `all_dates.is_empty()` check turns "found nowhere" into a 404. All other errors propagate immediately.
 
 ## Test Coverage
-
-| Suite | File | Count |
-|-------|------|-------|
-| PDF parser unit tests (50 districts + 4 error/utility) | `tests/test_pdf_parser.rs` | 54 |
-| API integration tests (incl. `download_pdf` HTTP paths via mockito) | `tests/test_api.rs` | 21 |
-| Config tests (`load_plans`, `parse_forwarded_allow_ips`) | `tests/test_config.rs` | 10 |
-| Middleware tests (`resolve_client_ip` via mini-router, span/log helpers) | `tests/test_middleware.rs` | 8 |
-| `AppError::into_response` tests | `tests/test_errors.rs` | 4 |
-| `parse_date` inline unit tests | `src/pdf_parser.rs` (`#[cfg(test)]`) | 5 |
 
 `cargo llvm-cov` line coverage is ~85 % (≈96 % excluding the `main.rs` server-bootstrap entrypoint). The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout→504 path is intentionally untested (fixed 30 s client timeout).
 
@@ -103,31 +44,13 @@ Integration tests use `tower::ServiceExt::oneshot` (not `axum-test`) to avoid ve
 
 Note: `test_missing_district_parameter_returns_422` checks for `StatusCode::BAD_REQUEST` (400) — axum 0.8 changed missing-query-param responses from 422 to 400.
 
-## Error Status Codes
-
-| `AppError` variant | HTTP status |
-|--------------------|-------------|
-| `DistrictNotFound` | 404 |
-| `InvalidUrl(_)` | 400 |
-| `ServiceUnavailable` | 504 Gateway Timeout |
-| `PdfNotFound(_)` | 500 (but soft-skipped in the handler, see above) |
-| `PdfError(_)` | 500 |
-
-Response body is always `{"detail": "<message>"}`.
-
-## `plans.yaml` Schema
-
-```yaml
-plans:
-  - url: "https://…/file.pdf"   # full PDF URL
-    pages: "1,2"                # comma-separated page numbers (string)
-```
+## `plans.yaml`
 
 `pages` is passed directly to `get_dates`, which parses the comma-separated 1-based page numbers and uses them as 0-based indices for `pdf_oxide`.
 
 ## Docker
 
-Four-stage build (`cargo-chef`): `chef` base (`rust:1-slim-trixie` + `cargo-chef`) → `planner` (writes `recipe.json`) → `builder` (`cargo chef cook` caches deps, then `cargo build --release`) → `gcr.io/distroless/cc-debian13:nonroot` runtime (~60 MB). `reqwest` 0.13's `rustls` feature uses the `aws-lc-rs` crypto provider; its `aws-lc-sys` C code builds with the base image's gcc/libc6-dev via aws-lc-sys's cmake-less fallback (no `cmake`/`make` needed, verified by a `--no-cache` build), and still no OpenSSL, so no `libssl-dev`/`pkg-config`. `curl` **is** required in the builder because `utoipa-swagger-ui`'s build script downloads the Swagger UI assets with it. Runtime TLS trust comes from `rustls-platform-verifier` reading the distroless image's native CA bundle (`/etc/ssl/certs`), not compiled-in `webpki-roots`. The distroless runtime has no shell/curl, no `tini`, and no manual user (the `:nonroot` tag already runs as uid 65532). The binary runs as PID 1 and handles SIGINT/SIGTERM itself via `axum::serve(...).with_graceful_shutdown(shutdown_signal())` (`shutdown_signal` in `src/main.rs`) — without that an unhandled signal would be ignored by PID 1, so ctrl+c / `docker stop` wouldn't work. Health checks use the binary's own `healthcheck` subcommand (`blaue_tonne_rust healthcheck` → GET `/health`, exit 0/1) since curl isn't available. See `.dockerignore` for the build-context exclusions.
+See the `docker-build` skill (`.claude/skills/docker-build/SKILL.md`) for the image build and runtime details.
 
 ## Key Conventions
 
@@ -136,6 +59,3 @@ Four-stage build (`cargo-chef`): `chef` base (`rust:1-slim-trixie` + `cargo-chef
 - No `unwrap()` in production paths; errors propagate via `AppError`.
 - Date format from PDFs: `%d.%m.%y` (e.g. `06.01.26`). Returned as RFC 3339 UTC strings (`Utc.from_utc_datetime(&dt).to_rfc3339()`).
 - `dates_cache` is keyed by district name (`String`); `pdf_cache` is keyed by PDF URL (`String`).
-- Integration tests use `tower::ServiceExt::oneshot` (not `axum-test`) to avoid version conflicts.
-- Network-dependent tests use `mockito` to avoid real HTTP calls.
-- URL-encode district names with `urlencoding::encode` when building test URIs.
