@@ -72,6 +72,71 @@ fn test_load_plans_missing_plans_key_errors() {
 }
 
 // ---------------------------------------------------------------------------
+// Plan URL validation.
+//
+// Whether a URL is fetchable at all is a property of the config, so it is
+// checked once at load time. Left to `download_pdf` it would surface per
+// request as a 503 ("try again later" — it never will) plus a WARN, for as long
+// as the process runs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_load_plans_rejects_non_pdf_url() {
+    let yaml = r#"
+plans:
+  - url: "https://example.test/schedule.html"
+    pages: "1"
+"#;
+    let path = write_temp("plans_not_pdf", yaml);
+    let result = load_plans(&path);
+    std::fs::remove_file(&path).ok();
+    assert!(
+        result.is_err(),
+        "a non-.pdf plan URL must fail at load time"
+    );
+}
+
+#[test]
+fn test_load_plans_rejects_non_http_scheme() {
+    let yaml = r#"
+plans:
+  - url: "file:///etc/schedule.pdf"
+    pages: "1"
+"#;
+    let path = write_temp("plans_bad_scheme", yaml);
+    let result = load_plans(&path);
+    std::fs::remove_file(&path).ok();
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_load_plans_rejects_unparseable_url() {
+    let yaml = r#"
+plans:
+  - url: "not a url at all.pdf"
+    pages: "1"
+"#;
+    let path = write_temp("plans_unparseable", yaml);
+    let result = load_plans(&path);
+    std::fs::remove_file(&path).ok();
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_load_plans_accepts_pdf_url_with_query() {
+    // The check is on the path, so a cache-busting query is not a config error.
+    let yaml = r#"
+plans:
+  - url: "https://example.test/Abfuhrplan_2027.PDF?v=2#page=3"
+    pages: "1"
+"#;
+    let path = write_temp("plans_query", yaml);
+    let plans = load_plans(&path).expect("a query string must not disqualify the URL");
+    std::fs::remove_file(&path).ok();
+    assert_eq!(plans.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
 // parse_forwarded_allow_ips
 // ---------------------------------------------------------------------------
 

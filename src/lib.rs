@@ -1,14 +1,17 @@
+// Modules reached directly by the integration tests stay `pub`; everything the
+// tests only need indirectly is `pub(crate)` and surfaces through the re-exports
+// below, so there is exactly one public path per item.
 pub mod config;
-pub mod download;
 pub mod errors;
-pub mod handlers;
 pub mod middleware;
-pub mod openapi;
 pub mod pdf_parser;
-pub mod router;
-pub mod state;
+
+pub(crate) mod download;
+pub(crate) mod handlers;
+pub(crate) mod openapi;
+pub(crate) mod router;
+pub(crate) mod state;
 
 pub use middleware::ResolvedClientIp;
-pub use openapi::ApiDoc;
 pub use router::build_router;
 pub use state::AppState;

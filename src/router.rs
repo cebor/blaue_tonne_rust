@@ -28,17 +28,24 @@ pub fn build_router(state: AppState, forwarded_allow_ips: Vec<IpNet>) -> Router 
         .on_request(DefaultOnRequest::new().level(Level::TRACE))
         .on_response(middleware::log_response);
 
-    Router::new()
+    // Traced routes. `Router::layer` only affects routes registered before it,
+    // so /health is added outside this block: container health checks run every
+    // few seconds and would otherwise flood the logs. The trade-off is that
+    // /health is not traced at all, at any level.
+    let traced = Router::new()
         .merge(
             SwaggerUi::new("/docs")
                 .url(api_doc_url, ApiDoc::openapi())
                 .config(api_doc_config),
         )
-        .route("/health", get(handlers::health_check))
         .route("/lk_rosenheim", get(handlers::lk_rosenheim_handler))
         // Layer order with Router::layer: last `.layer()` call = outermost (runs first).
         // ip_middleware must run before trace_layer so the span already has client_ip.
         .layer(trace_layer)
-        .layer(ip_middleware)
+        .layer(ip_middleware);
+
+    Router::new()
+        .route("/health", get(handlers::health_check))
+        .merge(traced)
         .with_state(state)
 }
