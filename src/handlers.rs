@@ -97,9 +97,18 @@ pub async fn lk_rosenheim_handler(
             Err(e) => return Err(e),
         };
 
+        // Parsing a PDF is CPU-bound and takes long enough to stall a runtime
+        // worker, so it goes to the blocking pool. Note such a task is not
+        // cancelled when the client disconnects — it runs to completion.
         // `district` is already normalized and normalization is idempotent, so
         // get_dates can take it as-is.
-        match get_dates(&pdf_bytes, &plan.pages, &district) {
+        let pages = plan.pages.clone();
+        let key = district.clone();
+        let parsed = tokio::task::spawn_blocking(move || get_dates(&pdf_bytes, &pages, &key))
+            .await
+            .map_err(|e| AppError::PdfError(format!("PDF parse task failed: {e}")))?;
+
+        match parsed {
             Ok(dates) => all_dates.extend(dates),
             // Not in this plan's PDF — try the remaining plans; the
             // final is_empty check turns "in none of them" into a 404.
