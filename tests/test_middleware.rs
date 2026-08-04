@@ -1,14 +1,13 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Once};
-use std::time::Duration;
 
 use axum::{
     Extension, Router,
     body::Body,
     extract::ConnectInfo,
-    http::Request,
+    http::{Request, StatusCode},
     middleware::from_fn_with_state,
-    response::{IntoResponse, Response},
+    response::Response,
     routing::get,
 };
 use http_body_util::BodyExt;
@@ -17,7 +16,8 @@ use tower::ServiceExt;
 use tracing::Level;
 
 use blaue_tonne_rust::ResolvedClientIp;
-use blaue_tonne_rust::middleware::{log_response, make_request_span, resolve_client_ip};
+use blaue_tonne_rust::middleware::{make_request_span, resolve_client_ip};
+use blaue_tonne_rust::{AppState, build_router};
 
 // ---------------------------------------------------------------------------
 // resolve_client_ip — exercised via a mini-router that echoes the resolved IP
@@ -122,7 +122,7 @@ async fn test_resolve_ip_trusted_via_cidr() {
 }
 
 // ---------------------------------------------------------------------------
-// make_request_span / log_response — tracing helpers
+// make_request_span — records the resolved client IP on the span
 // ---------------------------------------------------------------------------
 
 static INIT: Once = Once::new();
@@ -137,18 +137,7 @@ fn init_tracing() {
 }
 
 #[test]
-fn test_make_request_span_health_is_trace() {
-    init_tracing();
-    let req = Request::builder()
-        .uri("/health")
-        .body(Body::empty())
-        .unwrap();
-    let span = make_request_span(&req);
-    assert_eq!(span.metadata().unwrap().level(), &Level::TRACE);
-}
-
-#[test]
-fn test_make_request_span_other_is_info() {
+fn test_make_request_span_is_info() {
     init_tracing();
     let req = Request::builder()
         .uri("/lk_rosenheim")
@@ -158,16 +147,97 @@ fn test_make_request_span_other_is_info() {
     assert_eq!(span.metadata().unwrap().level(), &Level::INFO);
 }
 
-#[test]
-fn test_log_response_both_branches() {
-    init_tracing();
-    let res = ().into_response();
+// ---------------------------------------------------------------------------
+// /health is registered outside the traced router, so it must not produce a
+// request span — this is what keeps high-frequency health checks out of the
+// logs, and it is the property that would silently regress if someone moved
+// the route back inside the layered block in build_router.
+// ---------------------------------------------------------------------------
 
-    // INFO span → info branch
-    let info_span = tracing::info_span!("request");
-    log_response(&res, Duration::from_millis(3), &info_span);
+/// Records "request" spans and the targets of all events emitted while this is
+/// the active subscriber.
+#[derive(Clone, Default)]
+struct TraceRecorder {
+    spans: Arc<std::sync::atomic::AtomicUsize>,
+    event_targets: Arc<std::sync::Mutex<Vec<String>>>,
+}
 
-    // TRACE span → trace branch
-    let trace_span = tracing::trace_span!("request");
-    log_response(&res, Duration::from_millis(3), &trace_span);
+impl TraceRecorder {
+    fn span_count(&self) -> usize {
+        self.spans.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TraceRecorder {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        _id: &tracing::span::Id,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if attrs.metadata().name() == "request" {
+            self.spans
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        self.event_targets
+            .lock()
+            .unwrap()
+            .push(event.metadata().target().to_string());
+    }
+}
+
+async fn record_trace(uri: &str) -> TraceRecorder {
+    use tracing_subscriber::layer::SubscriberExt;
+
+    let recorder = TraceRecorder::default();
+    let subscriber = tracing_subscriber::registry().with(recorder.clone());
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let app = build_router(AppState::new(vec![]), vec![]);
+    let response = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{uri} did not return 200"
+    );
+
+    recorder
+}
+
+#[tokio::test]
+async fn test_health_produces_no_request_span() {
+    assert_eq!(record_trace("/health").await.span_count(), 0);
+}
+
+#[tokio::test]
+async fn test_traced_route_produces_a_request_span() {
+    // Control for the test above: without this, the assertion would also hold
+    // if tracing were broken everywhere.
+    assert_eq!(record_trace("/docs/openapi.json").await.span_count(), 1);
+}
+
+#[tokio::test]
+async fn test_response_is_logged_under_this_crates_target() {
+    // Regression guard: tower-http's DefaultOnResponse emits under the
+    // `tower_http` target, which the default RUST_LOG fallback in main.rs
+    // (`blaue_tonne_rust=info`) filters out. Swapping middleware::log_response
+    // for it makes request logging vanish in production while every other test
+    // still passes.
+    let recorder = record_trace("/docs/openapi.json").await;
+    let targets = recorder.event_targets.lock().unwrap().clone();
+
+    assert!(
+        targets.iter().any(|t| t.starts_with("blaue_tonne_rust")),
+        "no event under this crate's target, got: {targets:?}"
+    );
 }

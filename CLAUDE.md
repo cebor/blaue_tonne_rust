@@ -10,10 +10,14 @@ Tests require the fixture PDF at `tests/fixtures/lk_rosenheim_2026.pdf` (already
 
 ## Middleware & Request Pipeline
 
-Layer order in `build_router` (`src/router.rs`): `ip_middleware` is added last (`.layer()`) so it is outermost — it runs **before** `TraceLayer`, ensuring the span already has `client_ip` populated. The middleware logic lives in `src/middleware.rs`.
+`build_router` (`src/router.rs`) builds a **traced** sub-router and merges it into an untraced outer router. `Router::layer` only affects routes registered before it, so `/health` — registered on the outer router — carries neither middleware. Container health checks run every few seconds; keeping them off the layers is what stops them flooding the logs. The trade-off: `/health` is not traced **at all**, at any `RUST_LOG` level. `tests/test_middleware.rs` pins this with a span-counting subscriber.
+
+Within the traced sub-router, `ip_middleware` is added last (`.layer()`) so it is outermost — it runs **before** `TraceLayer`, ensuring the span already has `client_ip` populated. The middleware logic lives in `src/middleware.rs`.
 
 1. **`ip_middleware`** — `middleware::resolve_client_ip`, wired up via `axum::middleware::from_fn_with_state` with the `FORWARDED_ALLOW_IPS` allowlist as state. If the connecting peer is in the allowlist, the leftmost `X-Forwarded-For` entry is used; otherwise the socket IP is used. Falls back to `127.0.0.1` in unit tests (no `ConnectInfo`). Inserts `ResolvedClientIp` extension.
-2. **`TraceLayer`** — uses `middleware::make_request_span` to create a span per request (method, URI, client_ip) and `middleware::log_response` to log response status + latency_ms. Most requests use an `info_span!`/INFO; `/health` requests use a `trace_span!` and are logged at TRACE only (high-frequency health checks would otherwise flood the logs). `log_response` recovers the level from the span's metadata.
+2. **`TraceLayer`** — uses `middleware::make_request_span` to create an `info_span!` per request (method, URI, client_ip) and `middleware::log_response` to log status + latency_ms at INFO.
+
+`log_response` is deliberately **not** `DefaultOnResponse`: tower-http emits under the `tower_http::trace` target, which the default `RUST_LOG` fallback (`blaue_tonne_rust=info`) filters out — request logging would silently disappear in production. `test_response_is_logged_under_this_crates_target` pins this.
 
 ## Environment Variables
 
@@ -22,7 +26,7 @@ Layer order in `build_router` (`src/router.rs`): `ip_middleware` is added last (
 | `PLANS_PATH` | `plans.yaml` | Path to plans YAML config |
 | `BIND_ADDR` | `0.0.0.0:8080` | TCP address to listen on |
 | `FORWARDED_ALLOW_IPS` | *(empty)* | Comma-separated IPs/CIDRs whose `X-Forwarded-For` is trusted; use `*` to trust all |
-| `RUST_LOG` | `blaue_tonne_rust=info` | Standard `tracing-subscriber` filter. When unset, falls back to `blaue_tonne_rust=info`; when set it takes full control (e.g. `blaue_tonne_rust=trace` surfaces the TRACE-level `/health` request logs). |
+| `RUST_LOG` | `blaue_tonne_rust=info` | Standard `tracing-subscriber` filter. When unset, falls back to `blaue_tonne_rust=info`; when set it takes full control. `/health` is never logged regardless — it is outside the traced router. |
 
 ## PDF Parsing
 

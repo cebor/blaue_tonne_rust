@@ -34,9 +34,9 @@ async fn main() {
         run_healthcheck().await;
     }
 
-    // `RUST_LOG` fully controls filtering when set (so e.g.
-    // `RUST_LOG=blaue_tonne_rust=trace` surfaces /health request logs); only
-    // when it is absent do we fall back to a sensible default.
+    // `RUST_LOG` fully controls filtering when set; only when it is absent do
+    // we fall back to a sensible default. Note /health is never logged at any
+    // level — it is registered outside the traced router (see `build_router`).
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
