@@ -125,14 +125,14 @@ async fn test_no_variant_discloses_the_data_source() {
     ];
 
     for variant in variants {
-        let status = variant.to_string();
+        let internal = variant.to_string();
         let body = body_to_json(variant.into_response()).await;
         let detail = body["detail"].as_str().unwrap().to_lowercase();
 
         for needle in DISCLOSING {
             assert!(
                 !detail.contains(needle),
-                "response for {status:?} leaks {needle:?}: {detail:?}"
+                "response for {internal:?} leaks {needle:?}: {detail:?}"
             );
         }
     }

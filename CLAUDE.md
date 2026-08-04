@@ -40,17 +40,26 @@ Row reconstruction in `src/pdf_parser.rs` sorts `pdf_oxide` spans by Y descendin
 
 In `lk_rosenheim_handler`, **every** per-plan failure is skipped — download faults, a panicking parse task, and `PdfError` from `get_dates` alike. A plan that is momentarily unreachable, 5xx-ing, timing out, or serving truncated bytes must not take down requests that a surviving plan can answer. It is usually the *old* plan that breaks (retired at the turn of the year) while the current one is fine, so hard-failing on the first fault would break exactly the requests that should still work. Per-plan `DistrictNotFound` is likewise a skip — the district may live in a later plan's PDF.
 
-The first fault is remembered in `unread_plan`. If no dates are found *and* a plan was skipped, that fault is returned instead of `DistrictNotFound`: absence is only established if every plan was actually read, and claiming "District not found" without having looked asserts something never checked. Only when all plans were read and none contained the district is it a genuine 404. Because the *fault* is returned rather than a fixed status, skipping a parse error does not soften it: a single unparseable plan still answers 500, it just no longer drags down a request another plan could serve.
+The skipped fault is remembered in `unread_plan` via `remember_fault`, which keeps the fault that **says the most**, not the first one: a `PdfError` outranks any source-side fault. Remembering only the first would let a flaky upstream on an earlier plan downgrade our own parse bug from 500 to 503 — turning "we are broken" into "come back later". A single unparseable plan therefore still answers 500 regardless of plan order; it just no longer drags down a request another plan could serve.
 
-**`PdfNotFound` is the one fault that is skipped without being remembered.** An upstream 404 means the plan is gone — expected at the turn of the year, and permanent until someone prunes `plans.yaml`. Counting it as "we did not look" would make `DistrictNotFound` unreachable for the weeks in between: every typo would answer 503 and tell the caller to retry something that will never start working, while logging a WARN and an ERROR per request. `download.rs` already treats the same 404 as expected (DEBUG, not WARN). `test_only_plan_retired_returns_404` and `test_retired_plan_404_does_not_mask_a_genuine_404` pin this.
+If no dates are found *and* a plan was skipped, that fault is returned instead of `DistrictNotFound`: absence is only established if the plans were actually read, and claiming "District not found" without having looked asserts something never checked.
 
-This is why there is no "all plans are gone" warning: a stale `plans.yaml` now surfaces as a 503 on every request, visible in the status code, the 5xx rate and the per-plan WARN — instead of a single log line that could be missed or consumed by a transient false positive.
+**Whether a 404 is even available is decided by `plans_read`, not by `unread_plan`.** The counter is raised only by a plan that produced a definitive answer — `Ok(dates)` or `Err(DistrictNotFound)` from `get_dates`. When it is still zero at the end, nothing was searched at all, and the handler returns a fault instead of a 404 (`unread_plan`, or a fresh `Upstream` when the plans were merely retired). Two configurations hit this: a `plans.yaml` whose plans have all gone 404 upstream, and one with no plans at all.
+
+This is the property that makes a stale `plans.yaml` visible. `PdfNotFound` is skipped *without* being remembered — an upstream 404 means the plan is gone, expected at the turn of the year and permanent until someone prunes the config, and counting it as "we did not look" would make `DistrictNotFound` unreachable for the weeks in between (every typo answering 503, telling the caller to retry something that will never start working). But with a single plan configured, that same rule used to make total failure *silent*: every district answered "District not found" while `download.rs` logged the 404 at DEBUG only — no 5xx, no WARN, nothing in the log at the default filter. `plans_read` separates the two cases without giving either up:
+
+- old plan retired **+** current plan fine → `plans_read == 1` → a typo is still a 404 (`test_retired_plan_404_does_not_mask_a_genuine_404`)
+- every plan retired → `plans_read == 0` → 503 plus the ERROR from `into_response`, visible in the status code and the 5xx rate (`test_only_plan_retired_returns_503`, `test_no_plans_returns_503`)
+
+This is also why there is no separate "all plans are gone" warning — the status code already carries it.
+
+**An empty or whitespace-only `district` is rejected up front** (400, before the cache and before any network access). `normalize_district` strips whitespace, so both normalize to `""`, which is not a name: it would match any row whose cells are whitespace only, and establishing that would cost a download and a parse of every plan.
 
 **Only a complete answer is cached.** `dates_cache` has no expiry, so writing a result that was assembled while a plan was skipped would freeze that plan's missing dates in for the lifetime of the process — one momentary upstream blip, and the district keeps answering with half its dates forever. The handler therefore reads `unread_plan.is_none()` into `complete` (before the empty-check consumes the Option) and only inserts when it holds. `test_partial_result_from_a_skipped_plan_is_not_cached` pins it.
 
 ## Error Responses
 
-`AppError`'s `Display` text is the **internal** detail (upstream URLs, library error strings): it is logged, never serialized. Clients get the fixed `client_message()` for the variant. `into_response` logs at ERROR for any 5xx.
+`AppError`'s `Display` text is the **internal** detail (upstream URLs, library error strings): it is logged, never serialized. Clients get the fixed `client_message()` for the variant. `into_response` logs at ERROR for any 5xx and at DEBUG for any 4xx — the 4xx detail (e.g. axum's query-rejection text) would otherwise be collected and dropped unseen, and DEBUG keeps caller noise off the default filter.
 
 **Nothing a client can observe may reveal that this service fetches and parses PDFs from a third party** — not the message, not the status code, not the `/docs` response descriptions. Every source-side fault therefore collapses into 503 rather than 502/504: a gateway status is itself a statement about the architecture. `test_no_variant_discloses_the_data_source` asserts this over all variants at once against a list of giveaway substrings, so a message added later is covered without anyone remembering to extend the file. A new *variant* is caught by `assert_every_variant_is_covered` next to it — an exhaustive `match` that exists only to stop compiling when `AppError` grows.
 
@@ -58,10 +67,10 @@ This is why there is no "all plans are gone" warning: a stale `plans.yaml` now s
 
 | Variant | Status | Client sees | Meaning |
 |---------|--------|-------------|---------|
-| `BadRequest` | 400 | Invalid or missing query parameter | The only caller-caused variant |
-| `DistrictNotFound` | 404 | District not found | Every plan was read (or gone), district in none |
+| `BadRequest` | 400 | Invalid or missing query parameter | The only caller-caused variant: missing/undeserializable `district`, or one that is empty after normalization |
+| `DistrictNotFound` | 404 | District not found | At least one plan was read, none contained the district |
 | `PdfError` | 500 | Internal server error | Bytes downloaded but unparseable — our own fault |
-| `Upstream`, `ServiceUnavailable` | 503 | Service temporarily unavailable… | Plan URL bad, source unreachable/non-2xx/not-a-PDF/timed out |
+| `Upstream`, `ServiceUnavailable` | 503 | Service temporarily unavailable… | Source unreachable/non-2xx/not-a-PDF/timed out, or no plan could be read at all |
 | `PdfNotFound` | 503 | Service temporarily unavailable… | Plan retired upstream. Skipped per plan and never remembered, so this reaches a client only if it is constructed outside the handler |
 
 ## Download Size Cap
@@ -103,4 +112,4 @@ See the `docker-build` skill (`.claude/skills/docker-build/SKILL.md`) for the im
 - **Edition 2024** — requires Rust ≥ 1.85.
 - No `unwrap()` in production paths; errors propagate via `AppError`.
 - Date format from PDFs: `%d.%m.%y` (e.g. `06.01.26`). Returned as RFC 3339 UTC strings (`Utc.from_utc_datetime(&dt).to_rfc3339()`).
-- `dates_cache` is keyed by district name (`String`); `pdf_cache` is keyed by PDF URL (`String`).
+- `dates_cache` is keyed by the **normalized** district name (`pdf_parser::normalize_district`); `pdf_cache` is keyed by PDF URL (`String`).

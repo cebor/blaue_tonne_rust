@@ -63,10 +63,10 @@ curl 'http://localhost:8080/lk_rosenheim?district=Aschau'
 | Code | Meaning |
 |------|---------|
 | 200  | Dates found |
-| 400  | Missing or invalid `district` query parameter |
-| 404  | District not found |
+| 400  | Missing or invalid `district` query parameter (an empty or whitespace-only name is invalid) |
+| 404  | The configured plans were searched and none contained the district |
 | 500  | Internal error |
-| 503  | Temporarily unable to answer — retry later |
+| 503  | Temporarily unable to answer — retry later. Also returned when no plan could be read at all, so an outdated configuration is visible in the status code rather than answering "not found" for every district |
 
 Errors carry a generic `{"detail": "..."}` message. Responses deliberately disclose **nothing** about where the data comes from: no upstream URLs, no library error text, and no hint that the dates are extracted from PDFs published by a third party. That is also why every source-side fault (unreachable, non-2xx, not a PDF, timeout) collapses into 503 rather than 502/504 — a gateway status is itself a statement about the architecture. The real cause is logged.
 
@@ -126,8 +126,8 @@ cargo test -- --nocapture
 
 **Test coverage:**
 - 56 PDF parser tests: one per district against the fixture PDF, plus district-name normalization
-- 31 API integration tests (health, caching, error responses, plan-failure fallback, download size caps, mock HTTP server)
-- 10 config tests, 9 middleware tests, 7 error-response tests
+- 35 API integration tests (health, caching, error responses, plan-failure fallback, download size caps, mock HTTP server)
+- 14 config tests (incl. plan-URL validation), 9 middleware tests, 7 error-response tests
 - 5 inline unit tests for internal parsing helpers
 
 ### Docker

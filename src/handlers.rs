@@ -42,6 +42,20 @@ pub async fn health_check() -> Json<HealthResponse> {
     })
 }
 
+/// Remember the fault that says the most about why a plan could not be read.
+///
+/// `PdfError` is our own bug and has to reach the caller as a 500 even when a
+/// source-side fault happened on an earlier plan — keeping the *first* fault
+/// instead would let a flaky upstream silently downgrade the one status that
+/// should page someone.
+fn remember_fault(slot: &mut Option<AppError>, fault: AppError) {
+    let outranks =
+        matches!(fault, AppError::PdfError(_)) && !matches!(slot, Some(AppError::PdfError(_)));
+    if slot.is_none() || outranks {
+        *slot = Some(fault);
+    }
+}
+
 fn dates_to_iso(dates: &[NaiveDate]) -> Vec<String> {
     dates
         .iter()
@@ -84,21 +98,35 @@ pub async fn lk_rosenheim_handler(
     // letting a caller grow the map without bound.
     let district = normalize_district(&params.district);
 
+    // An all-whitespace name normalizes to "", which is not a district: it would
+    // match any row whose cells are whitespace only, and it would cost a full
+    // download and parse of every plan to find that out. Rejected before the
+    // cache and before any network access.
+    if district.is_empty() {
+        return Err(AppError::BadRequest(
+            "district must not be empty or whitespace-only".to_string(),
+        ));
+    }
+
     if let Some(cached) = state.dates_cache.get(district.as_str()) {
         return Ok(Json(dates_to_iso(&cached)));
     }
 
     let mut all_dates: Vec<NaiveDate> = Vec::new();
-    // First fault from a plan we could not evaluate — download *or* parse. Kept
-    // so that "no plan was readable" is not reported as "the district does not
-    // exist".
+    // The most telling fault from a plan we could not evaluate — download *or*
+    // parse (see `remember_fault`). Kept so that "no plan was readable" is not
+    // reported as "the district does not exist".
     //
-    // A plan's own upstream 404 deliberately does not count. That one is
+    // A plan's own upstream 404 deliberately does not land here. That one is
     // expected and permanent (last year's PDF goes offline while it is still
-    // listed in plans.yaml), so letting it in here would keep a genuine "this
-    // district does not exist" from ever surfacing again — for the weeks until
-    // someone prunes the config, every typo would answer 503 and log an error.
+    // listed in plans.yaml), so letting it in would keep a genuine "this district
+    // does not exist" from ever surfacing again — for the weeks until someone
+    // prunes the config, every typo would answer 503 and log an error.
     let mut unread_plan: Option<AppError> = None;
+    // Plans that produced a definitive answer: the district was in them, or it
+    // provably was not. Only these support a 404. A retired plan raises neither
+    // this nor `unread_plan`, which is exactly the case the count exists for.
+    let mut plans_read = 0usize;
 
     for plan in state.plans.iter() {
         let pdf_bytes = match download_pdf(&state.http_client, &state.pdf_cache, &plan.url).await {
@@ -113,7 +141,7 @@ pub async fn lk_rosenheim_handler(
             // request the surviving plans could answer.
             Err(e) => {
                 tracing::warn!(url = %plan.url, error = %e, "skipping unreadable plan");
-                unread_plan.get_or_insert(e);
+                remember_fault(&mut unread_plan, e);
                 continue;
             }
         };
@@ -132,24 +160,31 @@ pub async fn lk_rosenheim_handler(
                 // one bad PDF must not take down what the other plans can answer.
                 Err(e) => {
                     let e = AppError::PdfError(format!("PDF parse task failed: {e}"));
-                    tracing::warn!(url = %plan.url, error = %e, "skipping unreadable plan");
-                    unread_plan.get_or_insert(e);
+                    tracing::warn!(url = %plan.url, error = %e, "skipping unparseable plan");
+                    remember_fault(&mut unread_plan, e);
                     continue;
                 }
             };
 
         match parsed {
-            Ok(dates) => all_dates.extend(dates),
-            // Not in this plan's PDF — try the remaining plans; the
-            // final is_empty check turns "in none of them" into a 404.
-            Err(AppError::DistrictNotFound) => continue,
+            Ok(dates) => {
+                plans_read += 1;
+                all_dates.extend(dates);
+            }
+            // Not in this plan's PDF — try the remaining plans; the final
+            // is_empty check turns "in none of them" into a 404. This plan was
+            // read, so it counts: it is what makes that 404 an observation.
+            Err(AppError::DistrictNotFound) => {
+                plans_read += 1;
+                continue;
+            }
             // Corrupt or truncated bytes, or a `pages` entry pointing past the
             // end of the document. Skipped for the same reason as a failed
             // download — and the status is preserved: if this was the only
             // plan, the fault below is still the PdfError, i.e. still a 500.
             Err(e) => {
                 tracing::warn!(url = %plan.url, error = %e, "skipping unparseable plan");
-                unread_plan.get_or_insert(e);
+                remember_fault(&mut unread_plan, e);
                 continue;
             }
         }
@@ -160,9 +195,24 @@ pub async fn lk_rosenheim_handler(
     let complete = unread_plan.is_none();
 
     if all_dates.is_empty() {
-        // Absence is only established if every plan was actually read. If any
-        // was skipped, we did not look everywhere, and saying "not found" would
-        // assert something we never checked — report the fault instead.
+        // "Not found" is a claim about the data, and only a plan we actually
+        // read supports it. Nothing read at all — every plan skipped, or none
+        // configured — means we never looked, and there is no fault to report
+        // when the reason was a retired plan (those are not remembered). That
+        // case has to raise a fault of its own: otherwise a fully stale
+        // plans.yaml answers 404 for every district, silently, with nothing in
+        // the log above DEBUG and nothing in the 5xx rate.
+        if plans_read == 0 {
+            return Err(unread_plan.unwrap_or_else(|| {
+                AppError::Upstream(format!(
+                    "none of the {} configured plan(s) could be read",
+                    state.plans.len()
+                ))
+            }));
+        }
+        // At least one plan was read. If another was skipped we still did not
+        // look everywhere, so report that fault rather than assert an absence
+        // we never checked.
         return Err(unread_plan.unwrap_or(AppError::DistrictNotFound));
     }
 

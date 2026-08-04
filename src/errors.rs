@@ -81,6 +81,12 @@ impl IntoResponse for AppError {
         let status = self.status();
         if status.is_server_error() {
             tracing::error!(status = status.as_u16(), error = %self, "request failed");
+        } else if status.is_client_error() {
+            // The internal detail of a 4xx (e.g. axum's query-rejection text)
+            // would otherwise be collected and then dropped unseen — it is not
+            // serialized either. DEBUG keeps it off the default filter: a 4xx is
+            // caller noise, not an operator signal.
+            tracing::debug!(status = status.as_u16(), error = %self, "request rejected");
         }
         (status, Json(json!({ "detail": self.client_message() }))).into_response()
     }

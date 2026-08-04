@@ -282,13 +282,48 @@ async fn test_whitespace_variants_share_one_cache_entry() {
 }
 
 // ---------------------------------------------------------------------------
-// No plans → DistrictNotFound (no PDF to scan)
+// No plans configured → 503, not 404. A service with nothing to search cannot
+// have established that the district is missing.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_no_plans_returns_404() {
+async fn test_no_plans_returns_503() {
     let response = get(AppState::new(vec![]), "/lk_rosenheim?district=Kolbermoor").await;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// ---------------------------------------------------------------------------
+// An empty or whitespace-only district is rejected before any work happens.
+//
+// Both normalize to "", which is not a name: it would match any row whose cells
+// are whitespace only, and finding that out would cost a download and a parse of
+// every plan. The plan below points at a host that never resolves, so if the
+// guard is ever removed these turn into a network error instead of a 400.
+// ---------------------------------------------------------------------------
+
+fn state_with_unreachable_plan() -> AppState {
+    AppState::new(vec![Plan {
+        url: "http://nonexistent.invalid/schedule.pdf".to_string(),
+        pages: "1".to_string(),
+    }])
+}
+
+#[tokio::test]
+async fn test_empty_district_returns_400() {
+    let response = get(state_with_unreachable_plan(), "/lk_rosenheim?district=").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_to_json(response).await;
+    assert_eq!(body["detail"], "Invalid or missing query parameter");
+}
+
+#[tokio::test]
+async fn test_whitespace_only_district_returns_400() {
+    let response = get(
+        state_with_unreachable_plan(),
+        "/lk_rosenheim?district=%20%20%09",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 // ---------------------------------------------------------------------------
@@ -321,14 +356,15 @@ async fn test_invalid_pdf_url_returns_503() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = body_to_json(response).await;
     let detail = body["detail"].as_str().unwrap();
-    assert_eq!(
-        detail,
-        "Service temporarily unavailable, please try again later"
-    );
-    // Regression guard: internal detail (the upstream URL) must stay in the log.
+    // Only the leak matters here; pinning the exact wording as well would make
+    // this assertion unreachable and the guard decorative.
     assert!(
         !detail.contains(&upstream_url),
         "response leaked the upstream URL: {detail}"
+    );
+    assert!(
+        !detail.to_lowercase().contains("pdf"),
+        "response disclosed the data format: {detail}"
     );
 }
 
@@ -489,16 +525,23 @@ async fn test_unreadable_only_plan_returns_503_not_404() {
 }
 
 // ---------------------------------------------------------------------------
-// A retired plan (upstream 404) is the one fault that does *not* mask the 404.
+// A retired plan (upstream 404) does not mask the 404 — as long as some *other*
+// plan was actually read.
 //
 // Last year's PDF goes offline while it is still listed in plans.yaml, and stays
 // offline until someone prunes the config. Counting that as "we did not look"
 // would make "District not found" unreachable for weeks — every typo would get a
 // 503 telling the caller to retry something that will never start working.
+//
+// But when the retired plan was the *only* one, nothing was read at all, and a
+// 404 would be a claim about data nobody looked at. That case is a 503: a fully
+// stale plans.yaml has to be visible in the status code and the 5xx rate, not
+// answer "District not found" for every district with nothing above DEBUG in
+// the log.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_only_plan_retired_returns_404() {
+async fn test_only_plan_retired_returns_503() {
     let mut mock_server = mockito::Server::new_async().await;
     let _gone = mock_server
         .mock("GET", "/last-year.pdf")
@@ -515,8 +558,15 @@ async fn test_only_plan_retired_returns_404() {
         "/lk_rosenheim?district=NonExistentDistrict",
     )
     .await;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert_eq!(body_to_json(response).await["detail"], "District not found");
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "no plan was readable, so nothing supports a 'not found'"
+    );
+    assert_eq!(
+        body_to_json(response).await["detail"],
+        "Service temporarily unavailable, please try again later"
+    );
 }
 
 #[tokio::test]
@@ -1112,4 +1162,82 @@ async fn test_corrupt_pdf_returns_500() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+// ---------------------------------------------------------------------------
+// When several plans fail, the fault that reaches the caller is the one that
+// says the most — not whichever happened first.
+//
+// A `PdfError` is our own bug and has to stay a 500. Remembering only the first
+// fault would let a flaky upstream on an earlier plan downgrade it to a 503,
+// i.e. silently turn "we are broken" into "come back later".
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_parse_error_outranks_an_earlier_upstream_fault() {
+    let mut mock_server = mockito::Server::new_async().await;
+    // First plan: online but 5xx-ing → Upstream (503).
+    let _flaky = mock_server
+        .mock("GET", "/flaky.pdf")
+        .with_status(503)
+        .create_async()
+        .await;
+    // Second plan: downloads fine, but the bytes are not a PDF → PdfError (500).
+    let _corrupt = mock_server
+        .mock("GET", "/corrupt.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body("not actually a pdf")
+        .create_async()
+        .await;
+
+    let plans = vec![
+        Plan {
+            url: format!("{}/flaky.pdf", mock_server.url()),
+            pages: "1".to_string(),
+        },
+        Plan {
+            url: format!("{}/corrupt.pdf", mock_server.url()),
+            pages: "1".to_string(),
+        },
+    ];
+    let response = get(
+        AppState::new(plans),
+        "/lk_rosenheim?district=NonExistentDistrict",
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the parse failure must not be masked by the earlier upstream fault"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A plan URL may carry a query string. The `.pdf` check looks at the path, so
+// a cache-busting `?v=…` on an otherwise valid link is not a config error.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_plan_url_with_query_string_is_fetched() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _mock = mock_server
+        .mock("GET", "/schedule.pdf?v=2")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body(fixture_pdf_bytes())
+        .create_async()
+        .await;
+
+    let plan = Plan {
+        url: format!("{}/schedule.pdf?v=2", mock_server.url()),
+        pages: "1,2".to_string(),
+    };
+    let response = get(
+        AppState::new(vec![plan]),
+        "/lk_rosenheim?district=Kolbermoor",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!body_to_json(response).await.as_array().unwrap().is_empty());
 }
