@@ -73,6 +73,23 @@ fn parse_dates_from_row(row: &[String]) -> Vec<NaiveDate> {
 }
 
 // ---------------------------------------------------------------------------
+// District names
+// ---------------------------------------------------------------------------
+
+/// Canonical form of a district name.
+///
+/// District names in the PDF are stored as character fragments (e.g.
+/// "Bad Aibling" arrives as `["B", "ad", "A", "ib", "ling"]`), so all matching
+/// happens on the whitespace-stripped form. Callers that cache per district
+/// must key on this, otherwise "Bad Aibling", "BadAibling" and "B a d Aibling"
+/// all match the same row but occupy separate cache entries.
+///
+/// Idempotent: applying it to an already-normalized name is a no-op.
+pub fn normalize_district(district: &str) -> String {
+    district.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -94,7 +111,7 @@ pub fn get_dates(
 
     // District names in the PDF may be stored as character fragments, so we
     // concatenate all cells in a row and compare without spaces.
-    let district_key: String = district.chars().filter(|c| !c.is_whitespace()).collect();
+    let district_key = normalize_district(district);
 
     for page_idx in parse_page_numbers(pages) {
         let rows = extract_rows(&doc, page_idx)?;

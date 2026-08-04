@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::download::download_pdf;
 use crate::errors::AppError;
-use crate::pdf_parser::get_dates;
+use crate::pdf_parser::{get_dates, normalize_district};
 use crate::state::AppState;
 
 /// Successful response from the health endpoint
@@ -70,7 +70,11 @@ pub async fn lk_rosenheim_handler(
     State(state): State<AppState>,
     Query(params): Query<DistrictQuery>,
 ) -> Result<Json<Vec<String>>, AppError> {
-    let district = &params.district;
+    // Matching is whitespace-insensitive, so the cache has to be keyed on the
+    // normalized name — otherwise "Bad Aibling", "BadAibling" and " Bad Aibling"
+    // all resolve to the same row but each allocate their own cache entry,
+    // letting a caller grow the map without bound.
+    let district = normalize_district(&params.district);
 
     if let Some(cached) = state.dates_cache.get(district.as_str()) {
         return Ok(Json(dates_to_iso(&cached)));
@@ -85,7 +89,9 @@ pub async fn lk_rosenheim_handler(
             Err(e) => return Err(e),
         };
 
-        match get_dates(&pdf_bytes, &plan.pages, district) {
+        // `district` is already normalized and normalization is idempotent, so
+        // get_dates can take it as-is.
+        match get_dates(&pdf_bytes, &plan.pages, &district) {
             Ok(dates) => all_dates.extend(dates),
             // Not in this plan's PDF — try the remaining plans; the
             // final is_empty check turns "in none of them" into a 404.
@@ -98,8 +104,6 @@ pub async fn lk_rosenheim_handler(
         return Err(AppError::DistrictNotFound);
     }
 
-    state
-        .dates_cache
-        .insert(district.clone(), all_dates.clone());
+    state.dates_cache.insert(district, all_dates.clone());
     Ok(Json(dates_to_iso(&all_dates)))
 }

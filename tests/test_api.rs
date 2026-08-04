@@ -9,6 +9,7 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use blaue_tonne_rust::config::Plan;
+use blaue_tonne_rust::pdf_parser::normalize_district;
 use blaue_tonne_rust::{AppState, build_router};
 
 // ---------------------------------------------------------------------------
@@ -39,7 +40,11 @@ fn fake_dates(district: &str) -> Option<Vec<NaiveDate>> {
 
 fn state_with_cached_dates(district: &str, dates: Vec<NaiveDate>) -> AppState {
     let state = AppState::new(vec![]);
-    state.dates_cache.insert(district.to_string(), dates);
+    // The handler keys the cache on the normalized name, so seeding has to use
+    // the same form.
+    state
+        .dates_cache
+        .insert(normalize_district(district), dates);
     state
 }
 
@@ -154,8 +159,8 @@ async fn test_cache_prevents_repeated_pdf_parsing() {
     assert_eq!(r1.status(), StatusCode::OK);
     let d1 = body_to_json(r1).await;
 
-    // Manually confirm cache has the entry
-    assert!(state.dates_cache.contains_key("Bad Aibling"));
+    // Manually confirm cache has the entry (under the normalized key)
+    assert!(state.dates_cache.contains_key("BadAibling"));
 
     let r2 = app
         .oneshot(
@@ -179,11 +184,12 @@ async fn test_cache_prevents_repeated_pdf_parsing() {
 #[tokio::test]
 async fn test_multiple_districts_separate_cache_entries() {
     let state = AppState::new(vec![]);
-    state
-        .dates_cache
-        .insert("Kolbermoor".to_string(), fake_dates("Kolbermoor").unwrap());
     state.dates_cache.insert(
-        "Prien a. Chiemsee".to_string(),
+        normalize_district("Kolbermoor"),
+        fake_dates("Kolbermoor").unwrap(),
+    );
+    state.dates_cache.insert(
+        normalize_district("Prien a. Chiemsee"),
         fake_dates("Prien a. Chiemsee").unwrap(),
     );
     let app = build_router(state, vec![]);
@@ -215,6 +221,49 @@ async fn test_multiple_districts_separate_cache_entries() {
     let d1 = body_to_json(r1).await;
     let d2 = body_to_json(r2).await;
     assert_ne!(d1, d2);
+}
+
+// ---------------------------------------------------------------------------
+// Cache key: whitespace variants of a district name share one entry.
+// Matching strips whitespace, so without a normalized key every spelling of
+// the same district would allocate its own entry.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_whitespace_variants_share_one_cache_entry() {
+    let state = state_with_fixture_pdf();
+    let app = build_router(state.clone(), vec![]);
+
+    for spelling in [
+        "Bad+Aibling",
+        "BadAibling",
+        "B+a+d++Aibling",
+        "%20Bad%20Aibling%20",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/lk_rosenheim?district={spelling}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "spelling {spelling:?}");
+    }
+
+    assert_eq!(
+        state.dates_cache.len(),
+        1,
+        "expected a single cache entry, got: {:?}",
+        state
+            .dates_cache
+            .iter()
+            .map(|e| e.key().clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(state.dates_cache.contains_key("BadAibling"));
 }
 
 // ---------------------------------------------------------------------------
