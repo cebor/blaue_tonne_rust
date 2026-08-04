@@ -36,9 +36,25 @@ Row reconstruction in `src/pdf_parser.rs` sorts `pdf_oxide` spans by Y descendin
 
 In `lk_rosenheim_handler`, `PdfNotFound` and per-plan `DistrictNotFound` are soft skips (`continue` to the next plan — a district may live in a later plan's PDF); the final `all_dates.is_empty()` check turns "found nowhere" into a 404. All other errors propagate immediately.
 
+## Error Responses
+
+`AppError`'s `Display` text is the **internal** detail (upstream URLs, library error strings): it is logged, never serialized. Clients get the fixed `client_message()` for the variant. `into_response` logs at ERROR for any 5xx.
+
+**Nothing a client can observe may reveal that this service fetches and parses PDFs from a third party** — not the message, not the status code, not the `/docs` response descriptions. Every source-side fault therefore collapses into 503 rather than 502/504: a gateway status is itself a statement about the architecture. `test_no_variant_discloses_the_data_source` asserts this over all variants at once against a list of giveaway substrings, so a message added later is covered without anyone remembering to extend the file. A new *variant* is caught by `assert_every_variant_is_covered` next to it — an exhaustive `match` that exists only to stop compiling when `AppError` grows.
+
+`lk_rosenheim_handler` takes `Result<Query<DistrictQuery>, QueryRejection>` rather than a bare `Query` so the 400 also becomes an `AppError` — axum's own rejection is a plain-text body, which would be the one response not matching the documented `ErrorDetail` schema.
+
+| Variant | Status | Client sees | Meaning |
+|---------|--------|-------------|---------|
+| `BadRequest` | 400 | Invalid or missing query parameter | The only caller-caused variant |
+| `DistrictNotFound` | 404 | District not found | No plan's PDF contained the district |
+| `PdfError` | 500 | Internal server error | Bytes downloaded but unparseable — our own fault |
+| `Upstream`, `ServiceUnavailable` | 503 | Service temporarily unavailable… | Plan URL bad, source unreachable/non-2xx/not-a-PDF/timed out |
+| `PdfNotFound` | 503 | Service temporarily unavailable… | Plan retired upstream; soft-skipped per plan |
+
 ## Test Coverage
 
-`cargo llvm-cov` line coverage is ~85 % (≈96 % excluding the `main.rs` server-bootstrap entrypoint). The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout→504 path is intentionally untested (fixed 30 s client timeout).
+`cargo llvm-cov` line coverage is ~85 % (≈96 % excluding the `main.rs` server-bootstrap entrypoint). The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout path is intentionally untested (fixed 30 s client timeout); `test_errors.rs` covers the variant’s mapping instead.
 
 Integration tests use `tower::ServiceExt::oneshot` (not `axum-test`) to avoid version conflicts. Network tests use `mockito`. District names with special chars are URL-encoded with `urlencoding::encode`. The middleware tests inject `ConnectInfo<SocketAddr>` via `Request::builder().extension(...)` to exercise the X-Forwarded-For trusted-proxy path.
 

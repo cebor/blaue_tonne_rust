@@ -63,9 +63,13 @@ curl 'http://localhost:8080/lk_rosenheim?district=Aschau'
 | Code | Meaning |
 |------|---------|
 | 200  | Dates found |
-| 400  | Invalid/non-PDF URL in config |
+| 400  | Missing or invalid `district` query parameter |
 | 404  | District not found |
-| 504  | Upstream PDF server unavailable |
+| 500  | Collection plan could not be parsed |
+| 502  | Upstream PDF unavailable, unreachable, or not a PDF |
+| 504  | Upstream PDF server timed out |
+
+Errors carry a generic `{"detail": "..."}` message; the underlying cause (upstream URLs, library error text) is logged, not served.
 
 ### Health Check
 ```bash

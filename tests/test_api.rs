@@ -131,9 +131,22 @@ async fn test_get_dates_invalid_district_returns_404() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_missing_district_parameter_returns_422() {
+async fn test_missing_district_parameter_returns_400() {
     let response = get(AppState::new(vec![]), "/lk_rosenheim").await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // The 400 must carry the same `ErrorDetail` shape as every other error —
+    // axum's own QueryRejection would be plain text, which is what the handler
+    // maps away. Regression guard for the documented response schema.
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+    );
+    let body = body_to_json(response).await;
+    assert_eq!(body["detail"], "Invalid or missing query parameter");
 }
 
 // ---------------------------------------------------------------------------
@@ -277,11 +290,12 @@ async fn test_no_plans_returns_404() {
 }
 
 // ---------------------------------------------------------------------------
-// Invalid URL in plan → 400  (mocked: server returns HTML instead of PDF)
+// Bad plan URL → 503: the URL comes from plans.yaml, so this is a server-side
+// fault and must not be reported as a client error.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_invalid_pdf_url_returns_400() {
+async fn test_invalid_pdf_url_returns_503() {
     let mut mock_server = mockito::Server::new_async().await;
     let _mock = mock_server
         .mock("GET", "/not-a-pdf")
@@ -291,8 +305,9 @@ async fn test_invalid_pdf_url_returns_400() {
         .create_async()
         .await;
 
+    let upstream_url = format!("{}/not-a-pdf", mock_server.url());
     let plan = Plan {
-        url: format!("{}/not-a-pdf", mock_server.url()),
+        url: upstream_url.clone(),
         pages: "1".to_string(),
     };
     let response = get(
@@ -301,12 +316,17 @@ async fn test_invalid_pdf_url_returns_400() {
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = body_to_json(response).await;
+    let detail = body["detail"].as_str().unwrap();
+    assert_eq!(
+        detail,
+        "Service temporarily unavailable, please try again later"
+    );
+    // Regression guard: internal detail (the upstream URL) must stay in the log.
     assert!(
-        body["detail"].as_str().unwrap().contains("PDF"),
-        "expected PDF error detail, got: {}",
-        body["detail"]
+        !detail.contains(&upstream_url),
+        "response leaked the upstream URL: {detail}"
     );
 }
 
@@ -456,11 +476,11 @@ async fn test_pdf_404_is_soft_skipped() {
 }
 
 // ---------------------------------------------------------------------------
-// download_pdf: non-2xx (500) → 500 propagated
+// download_pdf: upstream non-2xx (500) → 503
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_pdf_server_error_returns_500() {
+async fn test_pdf_server_error_returns_503() {
     let mut mock_server = mockito::Server::new_async().await;
     let _mock = mock_server
         .mock("GET", "/broken.pdf")
@@ -477,15 +497,15 @@ async fn test_pdf_server_error_returns_500() {
         "/lk_rosenheim?district=Kolbermoor",
     )
     .await;
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 // ---------------------------------------------------------------------------
-// download_pdf: URL not ending in .pdf → 400 InvalidUrl (no network)
+// download_pdf: configured URL not ending in .pdf → 503 (no network)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_non_pdf_url_returns_400() {
+async fn test_non_pdf_url_returns_503() {
     let plan = Plan {
         url: "http://example.test/not-a-pdf-file".to_string(),
         pages: "1".to_string(),
@@ -495,17 +515,20 @@ async fn test_non_pdf_url_returns_400() {
         "/lk_rosenheim?district=Kolbermoor",
     )
     .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = body_to_json(response).await;
-    assert!(body["detail"].as_str().unwrap().contains("PDF"));
+    assert_eq!(
+        body["detail"],
+        "Service temporarily unavailable, please try again later"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// download_pdf: .pdf URL but wrong content-type → 400 InvalidUrl
+// download_pdf: .pdf URL but wrong content-type → 503
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_pdf_url_wrong_content_type_returns_400() {
+async fn test_pdf_url_wrong_content_type_returns_503() {
     let mut mock_server = mockito::Server::new_async().await;
     let _mock = mock_server
         .mock("GET", "/fake.pdf")
@@ -524,17 +547,20 @@ async fn test_pdf_url_wrong_content_type_returns_400() {
         "/lk_rosenheim?district=Kolbermoor",
     )
     .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = body_to_json(response).await;
-    assert!(body["detail"].as_str().unwrap().contains("valid PDF"));
+    assert_eq!(
+        body["detail"],
+        "Service temporarily unavailable, please try again later"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// download_pdf: connection error (unresolvable host) → 500 PdfError
+// download_pdf: connection error (unresolvable host) → 503
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_pdf_connection_error_returns_500() {
+async fn test_pdf_connection_error_returns_503() {
     // ".invalid" never resolves (RFC 2606) → immediate DNS/send error, not a
     // timeout. (A closed port is not reliable here: some environments drop
     // instead of refusing, which turns the test into a 30 s timeout / 504.)
@@ -547,11 +573,12 @@ async fn test_pdf_connection_error_returns_500() {
         "/lk_rosenheim?district=Kolbermoor",
     )
     .await;
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 // ---------------------------------------------------------------------------
-// get_dates: valid download but unparseable PDF bytes → 500 PdfError
+// get_dates: valid download but unparseable PDF bytes → 500 (our own parse
+// failed, so this one stays a server error rather than a gateway error)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

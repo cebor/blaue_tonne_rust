@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Query, State, rejection::QueryRejection},
 };
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -58,18 +58,26 @@ fn dates_to_iso(dates: &[NaiveDate]) -> Vec<String> {
     params(
         ("district" = String, Query, description = "Name of the district (Gemeinde), e.g. \"Bad Aibling\"")
     ),
+    // These descriptions are served to clients at /docs, so they describe the
+    // outcome only — never the data source behind it.
     responses(
         (status = 200, description = "Collection dates in RFC 3339 UTC format", body = Vec<String>),
-        (status = 400, description = "Bad request (invalid URL or parameter)", body = ErrorDetail),
+        (status = 400, description = "Missing or invalid `district` query parameter", body = ErrorDetail),
         (status = 404, description = "District not found", body = ErrorDetail),
-        (status = 504, description = "PDF service unavailable (timeout)", body = ErrorDetail),
+        (status = 500, description = "Internal server error", body = ErrorDetail),
+        (status = 503, description = "Temporarily unable to answer, retry later", body = ErrorDetail),
     ),
     tag = "dates"
 )]
 pub async fn lk_rosenheim_handler(
     State(state): State<AppState>,
-    Query(params): Query<DistrictQuery>,
+    // Taken as a `Result` rather than a bare `Query` so the rejection becomes an
+    // `AppError` too. Axum's own rejection is a plain-text body, which would be
+    // the one response that does not match the documented `ErrorDetail` shape.
+    params: Result<Query<DistrictQuery>, QueryRejection>,
 ) -> Result<Json<Vec<String>>, AppError> {
+    let Query(params) = params.map_err(|e| AppError::BadRequest(e.body_text()))?;
+
     // Matching is whitespace-insensitive, so the cache has to be keyed on the
     // normalized name — otherwise "Bad Aibling", "BadAibling" and " Bad Aibling"
     // all resolve to the same row but each allocate their own cache entry,
