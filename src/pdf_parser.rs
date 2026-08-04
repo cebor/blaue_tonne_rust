@@ -144,18 +144,6 @@ pub fn get_dates(
     Err(AppError::DistrictNotFound)
 }
 
-/// Debug helper: returns reconstructed table rows for a page.
-#[doc(hidden)]
-pub fn debug_extract(pdf_bytes: &[u8], pages: &str) -> Result<Vec<Vec<String>>, AppError> {
-    let doc = PdfDocument::from_bytes(pdf_bytes.to_vec())
-        .map_err(|e| AppError::PdfError(e.to_string()))?;
-    let mut all_rows = Vec::new();
-    for page_idx in parse_page_numbers(pages) {
-        all_rows.extend(extract_rows(&doc, page_idx)?);
-    }
-    Ok(all_rows)
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

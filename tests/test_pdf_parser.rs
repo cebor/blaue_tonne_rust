@@ -124,16 +124,41 @@ fn test_all_districts_count() {
 }
 
 // ---------------------------------------------------------------------------
-// Debug: print raw extraction output
+// normalize_district — the rule the dates cache is keyed on
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_debug_extraction() {
-    let pdf = fixture_pdf();
-    use blaue_tonne_rust::pdf_parser::debug_extract;
-    let rows = debug_extract(&pdf, "1").expect("debug_extract failed");
-    println!("=== Page 1: {} rows ===", rows.len());
-    for (i, row) in rows.iter().take(30).enumerate() {
-        println!("  row {:02}: {:?}", i, row);
+fn test_normalize_district_is_whitespace_insensitive() {
+    use blaue_tonne_rust::pdf_parser::normalize_district;
+
+    for spelling in [
+        "Bad Aibling",
+        "BadAibling",
+        "B a d  Aibling",
+        "  Bad Aibling ",
+    ] {
+        assert_eq!(normalize_district(spelling), "BadAibling");
     }
+}
+
+#[test]
+fn test_normalize_district_is_idempotent() {
+    use blaue_tonne_rust::pdf_parser::normalize_district;
+
+    // The handler passes the already-normalized name straight into get_dates,
+    // which normalizes again — that has to be a no-op.
+    for district in DISTRICTS {
+        let once = normalize_district(district);
+        assert_eq!(normalize_district(&once), once, "district {district:?}");
+    }
+}
+
+#[test]
+fn test_get_dates_accepts_normalized_district() {
+    use blaue_tonne_rust::pdf_parser::normalize_district;
+
+    let pdf = fixture_pdf();
+    let dates = get_dates(&pdf, PLANS_PAGES, &normalize_district("Bad Aibling"))
+        .expect("normalized district must resolve");
+    assert!(!dates.is_empty());
 }
