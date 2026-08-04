@@ -36,9 +36,17 @@ Row reconstruction in `src/pdf_parser.rs` sorts `pdf_oxide` spans by Y descendin
 
 50 districts are supported (see `DISTRICTS` constant in `tests/test_pdf_parser.rs`).
 
-## Soft-skipped errors in the handler
+## Per-plan failures in the handler
 
-In `lk_rosenheim_handler`, `PdfNotFound` and per-plan `DistrictNotFound` are soft skips (`continue` to the next plan — a district may live in a later plan's PDF); the final `all_dates.is_empty()` check turns "found nowhere" into a 404. All other errors propagate immediately.
+In `lk_rosenheim_handler`, **every** per-plan failure is skipped — download faults, a panicking parse task, and `PdfError` from `get_dates` alike. A plan that is momentarily unreachable, 5xx-ing, timing out, or serving truncated bytes must not take down requests that a surviving plan can answer. It is usually the *old* plan that breaks (retired at the turn of the year) while the current one is fine, so hard-failing on the first fault would break exactly the requests that should still work. Per-plan `DistrictNotFound` is likewise a skip — the district may live in a later plan's PDF.
+
+The first fault is remembered in `unread_plan`. If no dates are found *and* a plan was skipped, that fault is returned instead of `DistrictNotFound`: absence is only established if every plan was actually read, and claiming "District not found" without having looked asserts something never checked. Only when all plans were read and none contained the district is it a genuine 404. Because the *fault* is returned rather than a fixed status, skipping a parse error does not soften it: a single unparseable plan still answers 500, it just no longer drags down a request another plan could serve.
+
+**`PdfNotFound` is the one fault that is skipped without being remembered.** An upstream 404 means the plan is gone — expected at the turn of the year, and permanent until someone prunes `plans.yaml`. Counting it as "we did not look" would make `DistrictNotFound` unreachable for the weeks in between: every typo would answer 503 and tell the caller to retry something that will never start working, while logging a WARN and an ERROR per request. `download.rs` already treats the same 404 as expected (DEBUG, not WARN). `test_only_plan_retired_returns_404` and `test_retired_plan_404_does_not_mask_a_genuine_404` pin this.
+
+This is why there is no "all plans are gone" warning: a stale `plans.yaml` now surfaces as a 503 on every request, visible in the status code, the 5xx rate and the per-plan WARN — instead of a single log line that could be missed or consumed by a transient false positive.
+
+**Only a complete answer is cached.** `dates_cache` has no expiry, so writing a result that was assembled while a plan was skipped would freeze that plan's missing dates in for the lifetime of the process — one momentary upstream blip, and the district keeps answering with half its dates forever. The handler therefore reads `unread_plan.is_none()` into `complete` (before the empty-check consumes the Option) and only inserts when it holds. `test_partial_result_from_a_skipped_plan_is_not_cached` pins it.
 
 ## Error Responses
 
@@ -51,10 +59,10 @@ In `lk_rosenheim_handler`, `PdfNotFound` and per-plan `DistrictNotFound` are sof
 | Variant | Status | Client sees | Meaning |
 |---------|--------|-------------|---------|
 | `BadRequest` | 400 | Invalid or missing query parameter | The only caller-caused variant |
-| `DistrictNotFound` | 404 | District not found | No plan's PDF contained the district |
+| `DistrictNotFound` | 404 | District not found | Every plan was read (or gone), district in none |
 | `PdfError` | 500 | Internal server error | Bytes downloaded but unparseable — our own fault |
 | `Upstream`, `ServiceUnavailable` | 503 | Service temporarily unavailable… | Plan URL bad, source unreachable/non-2xx/not-a-PDF/timed out |
-| `PdfNotFound` | 503 | Service temporarily unavailable… | Plan retired upstream; soft-skipped per plan |
+| `PdfNotFound` | 503 | Service temporarily unavailable… | Plan retired upstream. Skipped per plan and never remembered, so this reaches a client only if it is constructed outside the handler |
 
 ## Download Size Cap
 
@@ -62,11 +70,16 @@ In `lk_rosenheim_handler`, `PdfNotFound` and per-plan `DistrictNotFound` are sof
 
 ## Test Coverage
 
-`cargo llvm-cov` line coverage is ~85 % (≈96 % excluding the `main.rs` server-bootstrap entrypoint). The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout path is intentionally untested (fixed 30 s client timeout); `test_errors.rs` covers the variant’s mapping instead.
+`cargo llvm-cov` line coverage is ~85 % (≈96 % excluding the `main.rs` server-bootstrap entrypoint). The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout path is intentionally untested (fixed 30 s client timeout); `test_errors.rs` covers the variant's mapping instead.
 
 Integration tests use `tower::ServiceExt::oneshot` (not `axum-test`) to avoid version conflicts. Network tests use `mockito`. District names with special chars are URL-encoded with `urlencoding::encode`. The middleware tests inject `ConnectInfo<SocketAddr>` via `Request::builder().extension(...)` to exercise the X-Forwarded-For trusted-proxy path.
 
-Note: `test_missing_district_parameter_returns_422` checks for `StatusCode::BAD_REQUEST` (400) — axum 0.8 changed missing-query-param responses from 422 to 400.
+Note: `test_missing_district_parameter_returns_400` checks for `StatusCode::BAD_REQUEST` — axum 0.8 changed missing-query-param responses from 422 to 400.
+
+Tests that assert on log output (`EventRecorder` in `test_api.rs`, `TraceRecorder` in `test_middleware.rs`) install the subscriber with `tracing::subscriber::set_default`, which is **thread-local**. Two things this depends on:
+
+- `#[tokio::test]`'s current-thread runtime keeps the request on the calling thread. A `multi_thread` flavour — or a path that reaches the `spawn_blocking` parse — would silently record nothing.
+- A permissive **global** subscriber must be installed first (`init_global_tracing` / `init_tracing`). `tracing` caches each callsite's `Interest` globally; without a global subscriber it is computed against `NoSubscriber` and cached as "never", and the thread-local recorder is then skipped before the dispatcher is consulted. Since tests run in parallel, omitting this makes the assertions pass or fail depending on which test reached the callsite first — it produced a genuine flake, not a theoretical one.
 
 ## `plans.yaml`
 

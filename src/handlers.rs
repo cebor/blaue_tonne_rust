@@ -89,12 +89,33 @@ pub async fn lk_rosenheim_handler(
     }
 
     let mut all_dates: Vec<NaiveDate> = Vec::new();
+    // First fault from a plan we could not evaluate — download *or* parse. Kept
+    // so that "no plan was readable" is not reported as "the district does not
+    // exist".
+    //
+    // A plan's own upstream 404 deliberately does not count. That one is
+    // expected and permanent (last year's PDF goes offline while it is still
+    // listed in plans.yaml), so letting it in here would keep a genuine "this
+    // district does not exist" from ever surfacing again — for the weeks until
+    // someone prunes the config, every typo would answer 503 and log an error.
+    let mut unread_plan: Option<AppError> = None;
 
     for plan in state.plans.iter() {
         let pdf_bytes = match download_pdf(&state.http_client, &state.pdf_cache, &plan.url).await {
             Ok(b) => b,
+            // A retired plan: skipped, but not remembered as a fault. Already
+            // logged at DEBUG in download_pdf.
             Err(AppError::PdfNotFound(_)) => continue,
-            Err(e) => return Err(e),
+            // A plan we cannot read is skipped, never fatal — a later plan may
+            // still hold the district, and it is usually the *old* plan that
+            // breaks (retired at the turn of the year) while the current one is
+            // fine. Failing here would let one dead plan take down every
+            // request the surviving plans could answer.
+            Err(e) => {
+                tracing::warn!(url = %plan.url, error = %e, "skipping unreadable plan");
+                unread_plan.get_or_insert(e);
+                continue;
+            }
         };
 
         // Parsing a PDF is CPU-bound and takes long enough to stall a runtime
@@ -104,23 +125,53 @@ pub async fn lk_rosenheim_handler(
         // get_dates can take it as-is.
         let pages = plan.pages.clone();
         let key = district.clone();
-        let parsed = tokio::task::spawn_blocking(move || get_dates(&pdf_bytes, &pages, &key))
-            .await
-            .map_err(|e| AppError::PdfError(format!("PDF parse task failed: {e}")))?;
+        let parsed =
+            match tokio::task::spawn_blocking(move || get_dates(&pdf_bytes, &pages, &key)).await {
+                Ok(parsed) => parsed,
+                // The parse task panicked. Same reasoning as an unreadable plan:
+                // one bad PDF must not take down what the other plans can answer.
+                Err(e) => {
+                    let e = AppError::PdfError(format!("PDF parse task failed: {e}"));
+                    tracing::warn!(url = %plan.url, error = %e, "skipping unreadable plan");
+                    unread_plan.get_or_insert(e);
+                    continue;
+                }
+            };
 
         match parsed {
             Ok(dates) => all_dates.extend(dates),
             // Not in this plan's PDF — try the remaining plans; the
             // final is_empty check turns "in none of them" into a 404.
             Err(AppError::DistrictNotFound) => continue,
-            Err(e) => return Err(e),
+            // Corrupt or truncated bytes, or a `pages` entry pointing past the
+            // end of the document. Skipped for the same reason as a failed
+            // download — and the status is preserved: if this was the only
+            // plan, the fault below is still the PdfError, i.e. still a 500.
+            Err(e) => {
+                tracing::warn!(url = %plan.url, error = %e, "skipping unparseable plan");
+                unread_plan.get_or_insert(e);
+                continue;
+            }
         }
     }
 
+    // Whether every plan was actually evaluated. Read before the branch below
+    // consumes `unread_plan`.
+    let complete = unread_plan.is_none();
+
     if all_dates.is_empty() {
-        return Err(AppError::DistrictNotFound);
+        // Absence is only established if every plan was actually read. If any
+        // was skipped, we did not look everywhere, and saying "not found" would
+        // assert something we never checked — report the fault instead.
+        return Err(unread_plan.unwrap_or(AppError::DistrictNotFound));
     }
 
-    state.dates_cache.insert(district, all_dates.clone());
+    // Only a complete answer may be cached. `dates_cache` has no expiry, so
+    // caching a result assembled while a plan was skipped would freeze that
+    // plan's missing dates in for the lifetime of the process — a transient
+    // upstream blip would become a permanently half-answered district.
+    if complete {
+        state.dates_cache.insert(district, all_dates.clone());
+    }
     Ok(Json(dates_to_iso(&all_dates)))
 }

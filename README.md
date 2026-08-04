@@ -65,11 +65,10 @@ curl 'http://localhost:8080/lk_rosenheim?district=Aschau'
 | 200  | Dates found |
 | 400  | Missing or invalid `district` query parameter |
 | 404  | District not found |
-| 500  | Collection plan could not be parsed |
-| 502  | Upstream PDF unavailable, unreachable, or not a PDF |
-| 504  | Upstream PDF server timed out |
+| 500  | Internal error |
+| 503  | Temporarily unable to answer — retry later |
 
-Errors carry a generic `{"detail": "..."}` message; the underlying cause (upstream URLs, library error text) is logged, not served.
+Errors carry a generic `{"detail": "..."}` message. Responses deliberately disclose **nothing** about where the data comes from: no upstream URLs, no library error text, and no hint that the dates are extracted from PDFs published by a third party. That is also why every source-side fault (unreachable, non-2xx, not a PDF, timeout) collapses into 503 rather than 502/504 — a gateway status is itself a statement about the architecture. The real cause is logged.
 
 ### Health Check
 ```bash
@@ -126,9 +125,9 @@ cargo test -- --nocapture
 ```
 
 **Test coverage:**
-- 54 parametrized district tests verifying date extraction from the fixture PDF
-- 21 API integration tests (health, caching, error responses, mock HTTP server)
-- 10 config tests, 8 middleware tests, 4 error-response tests
+- 56 PDF parser tests: one per district against the fixture PDF, plus district-name normalization
+- 31 API integration tests (health, caching, error responses, plan-failure fallback, download size caps, mock HTTP server)
+- 10 config tests, 9 middleware tests, 7 error-response tests
 - 5 inline unit tests for internal parsing helpers
 
 ### Docker

@@ -453,6 +453,113 @@ async fn test_get_dates_from_fixture_caches_result() {
 }
 
 // ---------------------------------------------------------------------------
+// No plan could be read → 503, never 404.
+//
+// "District not found" asserts that we looked and it was not there. If the only
+// plan was unreachable we never looked at all, so claiming absence would be a
+// lie the caller cannot distinguish from a genuine miss.
+//
+// The fault here is deliberately a 503 and not a 404: an upstream 404 means the
+// plan is *gone*, which is expected and permanent — see the test below.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_unreadable_only_plan_returns_503_not_404() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _mock = mock_server
+        .mock("GET", "/flaky.pdf")
+        .with_status(503)
+        .create_async()
+        .await;
+
+    let plan = Plan {
+        url: format!("{}/flaky.pdf", mock_server.url()),
+        pages: "1".to_string(),
+    };
+    let response = get(
+        AppState::new(vec![plan]),
+        "/lk_rosenheim?district=Kolbermoor",
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "an unread plan must not be reported as a missing district"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A retired plan (upstream 404) is the one fault that does *not* mask the 404.
+//
+// Last year's PDF goes offline while it is still listed in plans.yaml, and stays
+// offline until someone prunes the config. Counting that as "we did not look"
+// would make "District not found" unreachable for weeks — every typo would get a
+// 503 telling the caller to retry something that will never start working.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_only_plan_retired_returns_404() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _gone = mock_server
+        .mock("GET", "/last-year.pdf")
+        .with_status(404)
+        .create_async()
+        .await;
+
+    let plan = Plan {
+        url: format!("{}/last-year.pdf", mock_server.url()),
+        pages: "1".to_string(),
+    };
+    let response = get(
+        AppState::new(vec![plan]),
+        "/lk_rosenheim?district=NonExistentDistrict",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body_to_json(response).await["detail"], "District not found");
+}
+
+#[tokio::test]
+async fn test_retired_plan_404_does_not_mask_a_genuine_404() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _gone = mock_server
+        .mock("GET", "/last-year.pdf")
+        .with_status(404)
+        .create_async()
+        .await;
+    let _current = mock_server
+        .mock("GET", "/this-year.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body(fixture_pdf_bytes())
+        .create_async()
+        .await;
+
+    let plans = vec![
+        Plan {
+            url: format!("{}/last-year.pdf", mock_server.url()),
+            pages: "1,2".to_string(),
+        },
+        Plan {
+            url: format!("{}/this-year.pdf", mock_server.url()),
+            pages: "1,2".to_string(),
+        },
+    ];
+
+    let response = get(
+        AppState::new(plans),
+        "/lk_rosenheim?district=NonExistentDistrict",
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "a retired plan must not turn a genuine miss into a 503"
+    );
+    assert_eq!(body_to_json(response).await["detail"], "District not found");
+}
+
+// ---------------------------------------------------------------------------
 // Log-capturing helpers, used by the tests that assert on the internal detail
 // `AppError` deliberately keeps out of the response body.
 // ---------------------------------------------------------------------------
@@ -542,28 +649,199 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EventRecorder {
 }
 
 // ---------------------------------------------------------------------------
-// download_pdf: 404 → soft skip → eventually 404 DistrictNotFound
+// A plan that is online but momentarily unreadable must not take down requests
+// another plan can answer. Only a 404 used to be survivable here — a 503, a
+// reset connection or a timeout killed the whole request even when the district
+// sat in an already-cached plan.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_pdf_404_is_soft_skipped() {
+async fn test_transiently_broken_plan_does_not_break_remaining_plan() {
     let mut mock_server = mockito::Server::new_async().await;
-    let _mock = mock_server
-        .mock("GET", "/missing.pdf")
-        .with_status(404)
+    // Not a 404: this plan exists, the server is just having a bad moment.
+    let _flaky = mock_server
+        .mock("GET", "/flaky.pdf")
+        .with_status(503)
+        .create_async()
+        .await;
+    let _good = mock_server
+        .mock("GET", "/good.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body(fixture_pdf_bytes())
         .create_async()
         .await;
 
-    let plan = Plan {
-        url: format!("{}/missing.pdf", mock_server.url()),
-        pages: "1".to_string(),
-    };
-    let response = get(
-        AppState::new(vec![plan]),
-        "/lk_rosenheim?district=Kolbermoor",
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let plans = vec![
+        Plan {
+            url: format!("{}/flaky.pdf", mock_server.url()),
+            pages: "1,2".to_string(),
+        },
+        Plan {
+            url: format!("{}/good.pdf", mock_server.url()),
+            pages: "1,2".to_string(),
+        },
+    ];
+
+    let (recorder, _guard) = EventRecorder::install();
+    let response = get(AppState::new(plans), "/lk_rosenheim?district=Kolbermoor").await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a transiently broken plan must be skipped, not fail the request"
+    );
+    let body = body_to_json(response).await;
+    assert!(!body.as_array().unwrap().is_empty());
+
+    // The skip is silent to the caller but must be visible to the operator.
+    let warnings = recorder.at(tracing::Level::WARN);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("skipping unreadable plan")),
+        "the skipped plan was not logged, got: {warnings:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ...but the answer assembled while a plan was skipped must not be cached.
+//
+// `dates_cache` has no expiry. Caching a result that is missing the skipped
+// plan's dates would freeze a momentary upstream blip in for the lifetime of
+// the process: the district would keep answering with half its dates long after
+// the plan recovered, and nothing would ever re-read it.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_partial_result_from_a_skipped_plan_is_not_cached() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _flaky = mock_server
+        .mock("GET", "/flaky.pdf")
+        .with_status(503)
+        .create_async()
+        .await;
+    let _good = mock_server
+        .mock("GET", "/good.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body(fixture_pdf_bytes())
+        .create_async()
+        .await;
+
+    let plans = vec![
+        Plan {
+            url: format!("{}/flaky.pdf", mock_server.url()),
+            pages: "1,2".to_string(),
+        },
+        Plan {
+            url: format!("{}/good.pdf", mock_server.url()),
+            pages: "1,2".to_string(),
+        },
+    ];
+    let state = AppState::new(plans);
+
+    let response = get(state.clone(), "/lk_rosenheim?district=Kolbermoor").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!body_to_json(response).await.as_array().unwrap().is_empty());
+
+    assert!(
+        state.dates_cache.is_empty(),
+        "an incomplete answer was cached: {:?}",
+        state
+            .dates_cache
+            .iter()
+            .map(|e| e.key().clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Same for a plan that downloads fine but cannot be parsed. The bytes land in
+// `pdf_cache`, so hard-failing here would make the 500 permanent for the
+// process — every district, not just this one, for as long as it runs.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_unparseable_plan_does_not_break_remaining_plan() {
+    let mut mock_server = mockito::Server::new_async().await;
+    // Served as a PDF, but the bytes are not one — download succeeds, get_dates
+    // fails with PdfError.
+    let _corrupt = mock_server
+        .mock("GET", "/corrupt.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body("this is not a PDF at all")
+        .create_async()
+        .await;
+    let _good = mock_server
+        .mock("GET", "/good.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body(fixture_pdf_bytes())
+        .create_async()
+        .await;
+
+    let plans = vec![
+        Plan {
+            url: format!("{}/corrupt.pdf", mock_server.url()),
+            pages: "1,2".to_string(),
+        },
+        Plan {
+            url: format!("{}/good.pdf", mock_server.url()),
+            pages: "1,2".to_string(),
+        },
+    ];
+
+    let (recorder, _guard) = EventRecorder::install();
+    let response = get(AppState::new(plans), "/lk_rosenheim?district=Kolbermoor").await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "an unparseable plan must be skipped, not fail the request"
+    );
+    assert!(!body_to_json(response).await.as_array().unwrap().is_empty());
+
+    let warnings = recorder.at(tracing::Level::WARN);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("skipping unparseable plan")),
+        "the skipped plan was not logged, got: {warnings:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Same for a plan whose host does not resolve at all.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_unreachable_plan_does_not_break_remaining_plan() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _good = mock_server
+        .mock("GET", "/good.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body(fixture_pdf_bytes())
+        .create_async()
+        .await;
+
+    let plans = vec![
+        // ".invalid" never resolves (RFC 2606) → send error, not a timeout.
+        Plan {
+            url: "https://nonexistent.invalid/plan.pdf".to_string(),
+            pages: "1,2".to_string(),
+        },
+        Plan {
+            url: format!("{}/good.pdf", mock_server.url()),
+            pages: "1,2".to_string(),
+        },
+    ];
+
+    let response = get(AppState::new(plans), "/lk_rosenheim?district=Kolbermoor").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!body_to_json(response).await.as_array().unwrap().is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -665,6 +943,50 @@ async fn test_pdf_connection_error_returns_503() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// ---------------------------------------------------------------------------
+// Turn of the year: plans are published yearly, so for a few weeks plans.yaml
+// lists both the old and the new PDF, and at some point the old one 404s. That
+// must not fail the request — the surviving plan still answers it.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_retired_plan_404_does_not_break_remaining_plan() {
+    let mut mock_server = mockito::Server::new_async().await;
+    let _gone = mock_server
+        .mock("GET", "/last-year.pdf")
+        .with_status(404)
+        .create_async()
+        .await;
+    let _current = mock_server
+        .mock("GET", "/this-year.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body(fixture_pdf_bytes())
+        .create_async()
+        .await;
+
+    let plans = vec![
+        Plan {
+            url: format!("{}/last-year.pdf", mock_server.url()),
+            pages: "1,2".to_string(),
+        },
+        Plan {
+            url: format!("{}/this-year.pdf", mock_server.url()),
+            pages: "1,2".to_string(),
+        },
+    ];
+
+    let response = get(AppState::new(plans), "/lk_rosenheim?district=Kolbermoor").await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a retired plan must be skipped, not fail the request"
+    );
+    let body = body_to_json(response).await;
+    assert!(!body.as_array().unwrap().is_empty());
 }
 
 // ---------------------------------------------------------------------------
