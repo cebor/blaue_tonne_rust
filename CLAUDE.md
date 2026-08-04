@@ -85,6 +85,14 @@ Tests that assert on log output (`EventRecorder` in `test_api.rs`, `TraceRecorde
 
 `pages` is passed directly to `get_dates`, which parses the comma-separated 1-based page numbers and uses them as 0-based indices for `pdf_oxide`.
 
+`url` is validated in `config::validate_plan_url` at load time — scheme must be `http`/`https`, and the URL **path** must end in `.pdf`. Whether a URL is fetchable at all is a property of the config, not of a request: checked here, a typo fails once at startup with a clear message; left to `download_pdf` it becomes a 503 ("try again later" — it never will) plus a WARN on every request for the lifetime of the process. Matching on the path rather than the whole string is what lets a link carry a query string or fragment (`…/Abfuhrplan_2027.pdf?v=2`). `download.rs` keeps an equivalent path-based check as a guard for callers that build a URL some other way.
+
+## Known costs, deliberately not fixed
+
+- **Unknown districts are not negatively cached.** `dates_cache` only ever holds hits, so every request for a name that is in no plan costs, per plan, a `PdfDocument::from_bytes(pdf_bytes.to_vec())` — a full copy of the PDF — plus a blocking-pool thread, and `spawn_blocking` tasks are not cancelled when the client disconnects. A loop of random names is therefore arbitrarily expensive. Caching misses by district name would be *worse*: the key space is caller-controlled and would grow without bound. The real fix is an index cache per `(url, pages)` — parse each PDF once into a `district → dates` map — which makes misses O(1) as a side effect. Left for a later change.
+- **Neither cache expires.** If the source corrects a PDF under the same URL, the process never sees it; at the turn of the year a restart is required.
+- **No single-flight on downloads.** N concurrent cold requests fetch the same PDF N times, bounded only by `MAX_PDF_BYTES` per request.
+
 ## Docker
 
 See the `docker-build` skill (`.claude/skills/docker-build/SKILL.md`) for the image build and runtime details.

@@ -14,9 +14,38 @@ struct Config {
     plans: Vec<Plan>,
 }
 
+/// Reject a plan URL that `download_pdf` could never fetch.
+///
+/// Whether a URL is fetchable at all is a property of the config, not of the
+/// request. Checking it here makes a typo in `plans.yaml` fail once, at startup;
+/// left to `download_pdf` it becomes a 503 ("try again later" — it never will)
+/// plus a WARN on every request for the lifetime of the process.
+///
+/// The `.pdf` check is on the URL *path*, so a query string or fragment on an
+/// otherwise valid link (`…/Abfuhrplan_2027.pdf?v=2`) is not rejected.
+fn validate_plan_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid plan URL {url:?}: {e}"))?;
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!(
+            "plan URL {url:?} must use http or https, got {:?}",
+            parsed.scheme()
+        ));
+    }
+
+    if !parsed.path().to_lowercase().ends_with(".pdf") {
+        return Err(format!("plan URL {url:?} must point at a .pdf path"));
+    }
+
+    Ok(())
+}
+
 pub fn load_plans(path: &Path) -> Result<Vec<Plan>, Box<dyn std::error::Error>> {
     let content = fs::read_to_string(path)?;
     let config: Config = serde_yaml_ng::from_str(&content)?;
+    for plan in &config.plans {
+        validate_plan_url(&plan.url)?;
+    }
     Ok(config.plans)
 }
 

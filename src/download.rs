@@ -32,9 +32,13 @@ pub async fn download_pdf(
         return Ok(cached.clone());
     }
 
-    if !url.to_lowercase().ends_with(".pdf") {
+    // `config::validate_plan_url` already rejects this at startup; kept here as
+    // a guard for callers that build a URL some other way. Checked on the path
+    // only, so a query string or fragment does not disqualify a valid link.
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    if !path.to_lowercase().ends_with(".pdf") {
         return Err(AppError::Upstream(format!(
-            "configured plan URL does not end in .pdf: {url}"
+            "configured plan URL does not point at a .pdf path: {url}"
         )));
     }
 

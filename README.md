@@ -152,6 +152,8 @@ plans:
 
 The config path can be overridden with the `PLANS_PATH` env var.
 
+Plan URLs are validated at startup: the scheme must be `http`/`https` and the URL *path* must end in `.pdf` (a query string or fragment is fine). A URL that fails this aborts the process with an explicit message, rather than turning into a 503 on every request.
+
 ## License
 
 See [LICENSE](LICENSE) file for details.
