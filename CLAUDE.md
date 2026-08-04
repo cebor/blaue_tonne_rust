@@ -56,6 +56,10 @@ In `lk_rosenheim_handler`, `PdfNotFound` and per-plan `DistrictNotFound` are sof
 | `Upstream`, `ServiceUnavailable` | 503 | Service temporarily unavailable… | Plan URL bad, source unreachable/non-2xx/not-a-PDF/timed out |
 | `PdfNotFound` | 503 | Service temporarily unavailable… | Plan retired upstream; soft-skipped per plan |
 
+## Download Size Cap
+
+`download.rs` caps plan PDFs at `MAX_PDF_BYTES` (16 MiB) with **two** guards: a `Content-Length` pre-check and an accumulating check inside the `chunk()` read loop. The second is not redundant — `Content-Length` can be absent (chunked transfer) or wrong. Both produce the same 503 and the same client message, so their tests assert on the logged internal detail (`"advertises"` vs `"exceeds the"`); status alone would let either guard be deleted silently.
+
 ## Test Coverage
 
 `cargo llvm-cov` line coverage is ~85 % (≈96 % excluding the `main.rs` server-bootstrap entrypoint). The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout path is intentionally untested (fixed 30 s client timeout); `test_errors.rs` covers the variant’s mapping instead.

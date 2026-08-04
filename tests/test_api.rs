@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -451,6 +453,95 @@ async fn test_get_dates_from_fixture_caches_result() {
 }
 
 // ---------------------------------------------------------------------------
+// Log-capturing helpers, used by the tests that assert on the internal detail
+// `AppError` deliberately keeps out of the response body.
+// ---------------------------------------------------------------------------
+
+/// One recorded log event, flattened to `level` plus the concatenated text of
+/// every field. Several tests here assert on the *internal* detail that
+/// `AppError` keeps out of the response body but writes to the log, so the
+/// `error` field matters as much as `message`.
+#[derive(Clone, Debug)]
+struct LoggedEvent {
+    level: tracing::Level,
+    text: String,
+}
+
+#[derive(Clone, Default)]
+struct EventRecorder(Arc<Mutex<Vec<LoggedEvent>>>);
+
+static INIT: std::sync::Once = std::sync::Once::new();
+
+/// Installs a permissive global subscriber, once per test binary.
+///
+/// Required for the thread-local recorders below to see anything at all.
+/// `tracing` caches each callsite's `Interest` globally, and with no global
+/// subscriber that interest is computed against `NoSubscriber` — the first
+/// thread to reach a `warn!` marks the callsite "never", and every later
+/// thread-local recorder is skipped before the dispatcher is even consulted.
+/// Since tests run in parallel, that made these assertions pass or fail
+/// depending on which test happened to touch the callsite first.
+fn init_global_tracing() {
+    INIT.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_test_writer()
+            .init();
+    });
+}
+
+impl EventRecorder {
+    /// Installs the recorder for the current thread. The returned guard must be
+    /// held for as long as events should be captured.
+    ///
+    /// Thread-local, and `#[tokio::test]` is current-thread, so this only sees
+    /// what the request does on the calling thread. Fine for the paths below,
+    /// which all log before reaching `spawn_blocking`.
+    fn install() -> (Self, tracing::subscriber::DefaultGuard) {
+        use tracing_subscriber::layer::SubscriberExt;
+        init_global_tracing();
+        let recorder = Self::default();
+        let guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(recorder.clone()));
+        (recorder, guard)
+    }
+
+    fn at(&self, level: tracing::Level) -> Vec<String> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.level == level)
+            .map(|e| e.text.clone())
+            .collect()
+    }
+}
+
+#[derive(Default)]
+struct FieldCollector(String);
+
+impl tracing::field::Visit for FieldCollector {
+    fn record_debug(&mut self, _field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.push_str(&format!("{value:?} "));
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EventRecorder {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut fields = FieldCollector::default();
+        event.record(&mut fields);
+        self.0.lock().unwrap().push(LoggedEvent {
+            level: *event.metadata().level(),
+            text: fields.0,
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // download_pdf: 404 → soft skip → eventually 404 DistrictNotFound
 // ---------------------------------------------------------------------------
 
@@ -574,6 +665,103 @@ async fn test_pdf_connection_error_returns_503() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// ---------------------------------------------------------------------------
+// download_pdf: oversized body → 503, and nothing is cached.
+//
+// The cap in download.rs has two independent guards, and they need separate
+// tests: a Content-Length pre-check, and an accumulating check inside the read
+// loop. A single test with a large fixed body only ever reaches the first one —
+// mockito sets Content-Length for it, so the loop never runs.
+//
+// Both guards produce the same 503 and the same client message, so the status
+// code alone cannot tell them apart: each test would still pass with its own
+// guard removed. The internal detail that `AppError` writes to the log is what
+// distinguishes them, so that is what these assert on.
+// ---------------------------------------------------------------------------
+
+/// Mirrors `MAX_PDF_BYTES` in `src/download.rs`. Kept as a literal rather than
+/// exported: the constant is internal, and widening the crate's public API for
+/// a test would undo the module-visibility narrowing.
+const MAX_PDF_BYTES: usize = 16 * 1024 * 1024;
+
+#[tokio::test]
+async fn test_oversized_pdf_content_length_returns_503() {
+    // A fixed body gets an honest Content-Length from the mock server, so the
+    // pre-check sees the real size and rejects before reading anything. (Faking
+    // a mismatched header is not an option — hyper panics on a payload that
+    // disagrees with its declared length.)
+    let mut mock_server = mockito::Server::new_async().await;
+    let _mock = mock_server
+        .mock("GET", "/huge.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body(vec![b'x'; MAX_PDF_BYTES + 1])
+        .create_async()
+        .await;
+
+    let url = format!("{}/huge.pdf", mock_server.url());
+    let plan = Plan {
+        url: url.clone(),
+        pages: "1".to_string(),
+    };
+    let state = AppState::new(vec![plan]);
+
+    let (recorder, _guard) = EventRecorder::install();
+    let response = get(state.clone(), "/lk_rosenheim?district=Kolbermoor").await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    // The rejected body must not end up in the cache.
+    assert!(!state.pdf_cache.contains_key(&url));
+
+    // Pin the pre-check specifically. Without this the test would still pass
+    // with the pre-check removed — the in-loop cap would catch the same body
+    // and return the same 503. The log detail is what tells them apart.
+    let errors = recorder.at(tracing::Level::ERROR);
+    assert!(
+        errors.iter().any(|e| e.contains("advertises")),
+        "expected the content-length pre-check to reject, got: {errors:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_oversized_chunked_pdf_returns_503() {
+    // Chunked transfer → no Content-Length, so the pre-check cannot fire and
+    // the in-loop cap is the only thing standing between a hostile upstream and
+    // unbounded memory growth. This is the path the pre-check test cannot reach.
+    let mut mock_server = mockito::Server::new_async().await;
+    let _mock = mock_server
+        .mock("GET", "/huge.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_chunked_body(|w| {
+            let chunk = vec![b'x'; 1024 * 1024];
+            // One MiB past the cap, so the limit is crossed mid-stream.
+            for _ in 0..(MAX_PDF_BYTES / chunk.len()) + 1 {
+                w.write_all(&chunk)?;
+            }
+            Ok(())
+        })
+        .create_async()
+        .await;
+
+    let url = format!("{}/huge.pdf", mock_server.url());
+    let plan = Plan {
+        url: url.clone(),
+        pages: "1".to_string(),
+    };
+    let state = AppState::new(vec![plan]);
+
+    let (recorder, _guard) = EventRecorder::install();
+    let response = get(state.clone(), "/lk_rosenheim?district=Kolbermoor").await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(!state.pdf_cache.contains_key(&url));
+
+    let errors = recorder.at(tracing::Level::ERROR);
+    assert!(
+        errors.iter().any(|e| e.contains("exceeds the")),
+        "expected the in-loop cap to reject, got: {errors:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

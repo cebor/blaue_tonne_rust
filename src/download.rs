@@ -1,11 +1,16 @@
 //! HTTP download of plan PDFs, with URL/content-type validation and caching.
 
 use axum::http::StatusCode;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use reqwest::Client;
 
 use crate::errors::AppError;
+
+/// Upper bound on a plan PDF. The real files are a few hundred KB; this only
+/// exists so a misbehaving upstream cannot stream unbounded bytes into memory
+/// and from there into the cache.
+const MAX_PDF_BYTES: usize = 16 * 1024 * 1024;
 
 /// Maps a transport-level failure to the right variant. The client timeout
 /// covers the whole exchange, so a timeout can surface either from `send` or
@@ -33,7 +38,7 @@ pub async fn download_pdf(
         )));
     }
 
-    let response = client
+    let mut response = client
         .get(url)
         .send()
         .await
@@ -63,10 +68,32 @@ pub async fn download_pdf(
         )));
     }
 
-    let bytes = response
-        .bytes()
+    // Cheap pre-check: honest servers advertise the length.
+    if let Some(len) = response.content_length()
+        && len > MAX_PDF_BYTES as u64
+    {
+        return Err(AppError::Upstream(format!(
+            "{url} advertises {len} bytes, limit is {MAX_PDF_BYTES}"
+        )));
+    }
+
+    // Content-Length can lie or be absent (chunked), so enforce while reading.
+    // Deliberately not pre-sized from content_length: a bogus header would
+    // otherwise drive a large allocation for a tiny body.
+    let mut buf = BytesMut::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|e| transport_error(url, e))?;
+        .map_err(|e| transport_error(url, e))?
+    {
+        if buf.len() + chunk.len() > MAX_PDF_BYTES {
+            return Err(AppError::Upstream(format!(
+                "{url} exceeds the {MAX_PDF_BYTES} byte limit"
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    let bytes = buf.freeze();
 
     pdf_cache.insert(url.to_string(), bytes.clone());
     Ok(bytes)

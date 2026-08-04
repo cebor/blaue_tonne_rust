@@ -127,6 +127,13 @@ async fn test_resolve_ip_trusted_via_cidr() {
 
 static INIT: Once = Once::new();
 
+/// Installs a permissive global subscriber, once per test binary.
+///
+/// Not optional for `record_trace`: `tracing` caches callsite `Interest`
+/// globally, and without a global subscriber it is computed against
+/// `NoSubscriber` and cached as "never" — the thread-local recorder would then
+/// be skipped before the dispatcher is consulted, non-deterministically,
+/// depending on which parallel test reached the callsite first.
 fn init_tracing() {
     INIT.call_once(|| {
         tracing_subscriber::fmt()
@@ -154,17 +161,40 @@ fn test_make_request_span_is_info() {
 // the route back inside the layered block in build_router.
 // ---------------------------------------------------------------------------
 
-/// Records "request" spans and the targets of all events emitted while this is
-/// the active subscriber.
+/// One recorded event: the target it was emitted under and its message.
+#[derive(Clone, Debug, PartialEq)]
+struct RecordedEvent {
+    target: String,
+    message: String,
+}
+
+/// Records "request" spans and every event emitted while this is the active
+/// subscriber.
 #[derive(Clone, Default)]
 struct TraceRecorder {
     spans: Arc<std::sync::atomic::AtomicUsize>,
-    event_targets: Arc<std::sync::Mutex<Vec<String>>>,
+    events: Arc<std::sync::Mutex<Vec<RecordedEvent>>>,
 }
 
 impl TraceRecorder {
     fn span_count(&self) -> usize {
         self.spans.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn events(&self) -> Vec<RecordedEvent> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+/// Pulls the `message` field out of an event.
+#[derive(Default)]
+struct MessageVisitor(String);
+
+impl tracing::field::Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.0 = format!("{value:?}");
+        }
     }
 }
 
@@ -186,15 +216,28 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TraceRecorder {
         event: &tracing::Event<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
-        self.event_targets
-            .lock()
-            .unwrap()
-            .push(event.metadata().target().to_string());
+        let mut visitor = MessageVisitor::default();
+        event.record(&mut visitor);
+        self.events.lock().unwrap().push(RecordedEvent {
+            target: event.metadata().target().to_string(),
+            message: visitor.0,
+        });
     }
 }
 
+/// Drives one request with `recorder` installed as the thread-local subscriber.
+///
+/// Relies on `#[tokio::test]`'s current-thread runtime: `set_default` is
+/// thread-local, so anything the request does on another thread (a
+/// `multi_thread` flavour, or a route that hits `spawn_blocking` like
+/// `/lk_rosenheim`) would not be recorded. Keep the URIs here to routes that
+/// stay on the calling thread.
 async fn record_trace(uri: &str) -> TraceRecorder {
     use tracing_subscriber::layer::SubscriberExt;
+
+    // Explicit, not incidental: this used to work only because another test in
+    // this binary happened to call it first.
+    init_tracing();
 
     let recorder = TraceRecorder::default();
     let subscriber = tracing_subscriber::registry().with(recorder.clone());
@@ -233,11 +276,14 @@ async fn test_response_is_logged_under_this_crates_target() {
     // (`blaue_tonne_rust=info`) filters out. Swapping middleware::log_response
     // for it makes request logging vanish in production while every other test
     // still passes.
-    let recorder = record_trace("/docs/openapi.json").await;
-    let targets = recorder.event_targets.lock().unwrap().clone();
+    let events = record_trace("/docs/openapi.json").await.events();
 
+    // Match on the response event specifically, not just "some event from this
+    // crate" — otherwise any unrelated log line added later would satisfy this.
     assert!(
-        targets.iter().any(|t| t.starts_with("blaue_tonne_rust")),
-        "no event under this crate's target, got: {targets:?}"
+        events
+            .iter()
+            .any(|e| e.target.starts_with("blaue_tonne_rust") && e.message == "response sent"),
+        "no \"response sent\" event under this crate's target, got: {events:?}"
     );
 }
