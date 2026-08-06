@@ -5,10 +5,15 @@ use crate::config::Plan;
 use crate::errors::PlanError;
 use crate::index::{DistrictIndex, build_index};
 
-/// Shared application state (public so integration tests can build it).
+/// The router's state: the district index, and nothing else (public so
+/// integration tests can build one).
 ///
-/// Nothing in here changes while the process runs: every plan is read once at
-/// startup, so serving a request is a map lookup and no more.
+/// It is one field because after [`build_index`] returns, the service does no
+/// I/O at all — the plans and the `reqwest::Client` that read them are gone by
+/// then, and serving a request is a map lookup. The wrapper stays rather than
+/// passing `Arc<DistrictIndex>` around directly so that handler and router
+/// signatures name the service's state instead of one thing that happens to be
+/// in it.
 #[derive(Clone)]
 pub struct AppState {
     pub index: Arc<DistrictIndex>,
