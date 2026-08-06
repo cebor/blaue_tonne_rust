@@ -66,7 +66,17 @@ async fn main() {
         );
     }
 
-    let plans = load_plans(&plans_path).expect("failed to load plans.yaml");
+    // Unreadable file, invalid YAML, or a plan URL `download_pdf` could never
+    // fetch. Logged and exited rather than `expect`ed, like the index build
+    // below: both are startup faults, and both should reach an operator as a
+    // tracing ERROR rather than as a panic on stderr.
+    let plans = match load_plans(&plans_path) {
+        Ok(plans) => plans,
+        Err(e) => {
+            error!(path = %plans_path.display(), error = %e, "failed to load the plans config, refusing to start");
+            std::process::exit(1);
+        }
+    };
     info!("Loaded {} plan(s)", plans.len());
 
     // Logs what it resolved to (or that it is off) itself — a cache that
