@@ -37,7 +37,8 @@ pub async fn download_pdf(client: &Client, url: &str) -> Result<Bytes, PlanError
     let status = response.status();
     if status == StatusCode::NOT_FOUND {
         // Expected at the turn of the year, when last year's plan goes offline
-        // while it is still listed in plans.yaml. The handler soft-skips this.
+        // while it is still listed in plans.yaml. `build_index` matches on this
+        // variant to skip the plan with a WARN instead of refusing to start.
         tracing::debug!(url, "plan PDF returned 404, skipping this plan");
         return Err(PlanError::Retired(url.to_string()));
     }

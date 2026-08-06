@@ -28,7 +28,7 @@ use thiserror::Error;
 ///
 /// The `Display` text of each variant is the *internal* detail: `BadRequest`
 /// carries axum's rejection text, which is only ever logged, never serialized.
-/// Clients receive [`AppError::client_message`].
+/// Clients receive `client_message` instead, which is private for that reason.
 ///
 /// Nothing a client can observe — neither the status code nor the message — may
 /// reveal that this service fetches and parses PDFs from a third party. With the

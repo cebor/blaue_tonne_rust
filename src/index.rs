@@ -132,10 +132,15 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
         if parsed.is_none() {
             match download_pdf(&client, &plan.url).await {
                 // 2. Fresh bytes. A parse error here is our own problem and
-                //    stays fatal, exactly as before the cache existed.
+                //    stays fatal, exactly as before the cache existed. The parse
+                //    runs *before* the write, so bytes that will not parse never
+                //    reach the cache: otherwise the next start would find a
+                //    fresh entry it has to detect as bad and throw away, and a
+                //    later outage would fall back to a copy that cannot be read
+                //    either.
                 Ok(bytes) => {
+                    parsed = Some(parse_plan(bytes.clone(), &plan.pages).await?);
                     cache.put(&plan.url, &bytes);
-                    parsed = Some(parse_plan(bytes, &plan.pages).await?);
                 }
 
                 // 3. Gone upstream. Unchanged by the cache on purpose: 404 means

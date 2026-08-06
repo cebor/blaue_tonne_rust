@@ -78,9 +78,10 @@ fn test_load_plans_missing_plans_key_errors() {
 // Plan URL validation.
 //
 // Whether a URL is fetchable at all is a property of the config, so it is
-// checked once at load time. Left to `download_pdf` it would surface per
-// request as a 503 ("try again later" — it never will) plus a WARN, for as long
-// as the process runs.
+// checked while the config is read, where the message can name the offending
+// URL. Left to `download_pdf` it would still be fatal — every plan fault at
+// startup is — but it would surface as a failed fetch halfway through the index
+// build, blaming the source for a typo of ours.
 // ---------------------------------------------------------------------------
 
 #[test]
