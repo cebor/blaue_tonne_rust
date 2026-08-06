@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use blaue_tonne_rust::AppState;
 use blaue_tonne_rust::build_router;
 use blaue_tonne_rust::config::{load_plans, parse_forwarded_allow_ips};
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
@@ -68,7 +68,21 @@ async fn main() {
     let plans = load_plans(&plans_path).expect("failed to load plans.yaml");
     info!("Loaded {} plan(s)", plans.len());
 
-    let state = AppState::new(plans);
+    // Every plan is read here, once — the service does no network I/O after
+    // this point. A plan we cannot read is fatal: there is no second attempt at
+    // request time, so starting anyway would mean serving a district short of
+    // its dates for the lifetime of the process, silently. Logged rather than
+    // `expect`ed so the internal detail (URL, library text) goes through
+    // tracing like every other one.
+    let state = match AppState::build(&plans).await {
+        Ok(state) => state,
+        Err(e) => {
+            error!(error = %e, "failed to build the district index, refusing to start");
+            std::process::exit(1);
+        }
+    };
+    info!("Indexed {} district(s)", state.index.len());
+
     let app = build_router(state, forwarded_allow_ips);
 
     let bind_addr = bind_addr();

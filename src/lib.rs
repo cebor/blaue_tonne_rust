@@ -3,6 +3,7 @@
 // below, so there is exactly one public path per item.
 pub mod config;
 pub mod errors;
+pub mod index;
 pub mod middleware;
 pub mod pdf_parser;
 

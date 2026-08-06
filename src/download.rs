@@ -1,15 +1,13 @@
-//! HTTP download of plan PDFs, with URL/content-type validation and caching.
+//! HTTP download of plan PDFs, with URL and content-type validation.
 
 use axum::http::StatusCode;
 use bytes::{Bytes, BytesMut};
-use dashmap::DashMap;
 use reqwest::Client;
 
 use crate::errors::AppError;
 
 /// Upper bound on a plan PDF. The real files are a few hundred KB; this only
-/// exists so a misbehaving upstream cannot stream unbounded bytes into memory
-/// and from there into the cache.
+/// exists so a misbehaving upstream cannot stream unbounded bytes into memory.
 const MAX_PDF_BYTES: usize = 16 * 1024 * 1024;
 
 /// Maps a transport-level failure to the right variant. The client timeout
@@ -23,15 +21,7 @@ fn transport_error(url: &str, e: reqwest::Error) -> AppError {
     }
 }
 
-pub async fn download_pdf(
-    client: &Client,
-    pdf_cache: &DashMap<String, Bytes>,
-    url: &str,
-) -> Result<Bytes, AppError> {
-    if let Some(cached) = pdf_cache.get(url) {
-        return Ok(cached.clone());
-    }
-
+pub async fn download_pdf(client: &Client, url: &str) -> Result<Bytes, AppError> {
     // `config::validate_plan_url` already rejects this at startup; kept here as
     // a guard for callers that build a URL some other way. Checked on the path
     // only, so a query string or fragment does not disqualify a valid link.
@@ -97,8 +87,5 @@ pub async fn download_pdf(
         }
         buf.extend_from_slice(&chunk);
     }
-    let bytes = buf.freeze();
-
-    pdf_cache.insert(url.to_string(), bytes.clone());
-    Ok(bytes)
+    Ok(buf.freeze())
 }
