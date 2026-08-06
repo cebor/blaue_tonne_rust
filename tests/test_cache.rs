@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use blaue_tonne_rust::cache::PdfCache;
-use blaue_tonne_rust::errors::AppError;
+use blaue_tonne_rust::errors::PlanError;
 use blaue_tonne_rust::index::build_index;
 
 mod common;
@@ -202,7 +202,7 @@ async fn test_an_unreachable_source_without_a_cached_copy_is_still_fatal() {
     .await;
 
     assert!(
-        matches!(result, Err(AppError::Upstream(_))),
+        matches!(result, Err(PlanError::Failed(_))),
         "with nothing to fall back to the rule is unchanged: {result:?}"
     );
 

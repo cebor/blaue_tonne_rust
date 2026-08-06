@@ -14,7 +14,7 @@ use reqwest::Client;
 use crate::cache::PdfCache;
 use crate::config::Plan;
 use crate::download::download_pdf;
-use crate::errors::AppError;
+use crate::errors::PlanError;
 use crate::pdf_parser::{index_districts, normalize_district};
 
 /// Whole-exchange timeout for fetching one plan PDF at startup.
@@ -90,13 +90,13 @@ impl DistrictIndex {
 ///
 /// `cache` shortens all of this when it has the plan already, and rescues it
 /// when the download fails — see the step-by-step comments below.
-pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictIndex, AppError> {
+pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictIndex, PlanError> {
     // The client is local: after this function returns, the service does no
     // network I/O at all, so nothing should be able to hold on to it.
     let client = Client::builder()
         .timeout(DOWNLOAD_TIMEOUT)
         .build()
-        .map_err(|e| AppError::Upstream(format!("failed to build HTTP client: {e}")))?;
+        .map_err(|e| PlanError::failed(format!("failed to build HTTP client: {e}")))?;
 
     let mut index = DistrictIndex::default();
     let mut plans_indexed = 0usize;
@@ -141,7 +141,7 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
                 // 3. Gone upstream. Unchanged by the cache on purpose: 404 means
                 //    the plan is retired, and serving a copy of it would keep a
                 //    withdrawn plan alive for as long as the file survives.
-                Err(AppError::PdfNotFound(_)) => {
+                Err(PlanError::Retired(_)) => {
                     tracing::warn!(
                         url = %plan.url,
                         "plan is gone upstream, skipping it — prune it from plans.yaml"
@@ -207,7 +207,7 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
     // index would answer "District not found" for every name without ever
     // having looked — an assertion about data we never saw.
     if plans_indexed == 0 {
-        return Err(AppError::Upstream(format!(
+        return Err(PlanError::failed(format!(
             "none of the {} configured plan(s) could be read",
             plans.len()
         )));
@@ -223,9 +223,9 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
 async fn parse_plan(
     pdf_bytes: Bytes,
     pages: &str,
-) -> Result<HashMap<String, Vec<NaiveDate>>, AppError> {
+) -> Result<HashMap<String, Vec<NaiveDate>>, PlanError> {
     let pages = pages.to_string();
     tokio::task::spawn_blocking(move || index_districts(&pdf_bytes, &pages))
         .await
-        .map_err(|e| AppError::PdfError(format!("PDF parse task failed: {e}")))?
+        .map_err(|e| PlanError::failed(format!("PDF parse task failed: {e}")))?
 }

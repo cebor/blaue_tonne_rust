@@ -25,7 +25,7 @@ blaue_tonne_rust/
 │   ├── download.rs               # PDF download with validation and a size cap
 │   ├── cache.rs                  # On-disk cache for the downloaded plan PDFs
 │   ├── config.rs                 # YAML config loading
-│   ├── errors.rs                 # AppError enum with IntoResponse
+│   ├── errors.rs                 # AppError (what a request answers with) + PlanError (startup only)
 │   └── pdf_parser.rs             # PDF table extraction and date parsing
 ├── tests/
 │   ├── common/mod.rs             # Helpers shared by the integration test binaries

@@ -89,31 +89,43 @@ Dates for a district that several plans carry are concatenated in plan order —
 
 **Consequence: `plans.yaml` is read exactly once.** A new plan, or a corrected PDF under an unchanged URL, needs a restart. This is the accepted cost of the design, not an oversight.
 
-## Error Responses
+## Two error types, split by whether anyone can see them
 
-`AppError`'s `Display` text is the **internal** detail (upstream URLs, library error strings): it is logged, never serialized. Clients get the fixed `client_message()` for the variant. `into_response` logs at ERROR for any 5xx and at DEBUG for any 4xx — the 4xx detail (e.g. axum's query-rejection text) would otherwise be collected and dropped unseen, and DEBUG keeps caller noise off the default filter.
+Both live in `src/errors.rs`, deliberately in one file: the split between them *is* the design, and it stays honest more easily when both are in view — a new variant belongs in `AppError` only if a client can actually receive it.
 
-**Nothing a client can observe may reveal that this service fetches and parses PDFs from a third party** — not the message, not the status code, not the `/docs` response descriptions. `test_no_variant_discloses_the_data_source` asserts this over all variants at once against a list of giveaway substrings, so a message added later is covered without anyone remembering to extend the file. A new *variant* is caught by `assert_every_variant_is_covered` next to it — an exhaustive `match` that exists only to stop compiling when `AppError` grows. The source-side variants keep their 503 mapping (rather than 502/504, which would itself be a statement about the architecture) even though nothing on the route produces them any more: they exist as a type, and `IntoResponse` has to stay correct for one.
-
-`lk_rosenheim_handler` takes `Result<Query<DistrictQuery>, QueryRejection>` rather than a bare `Query` so the 400 also becomes an `AppError` — axum's own rejection is a plain-text body, which would be the one response not matching the documented `ErrorDetail` schema.
-
-Only the first two rows below are reachable over HTTP; the rest are startup faults, logged by `main` and never serialized. The `#[utoipa::path]` annotation lists 200/400/404 accordingly.
+**`AppError` is what a request can be answered with.** Two variants, both the caller's own doing:
 
 | Variant | Status | Client sees | Meaning |
 |---------|--------|-------------|---------|
-| `BadRequest` | 400 | Invalid or missing query parameter | The only caller-caused variant: missing/undeserializable `district`, or one that is empty after normalization |
+| `BadRequest` | 400 | Invalid or missing query parameter | Missing/undeserializable `district`, or one that is empty after normalization |
 | `DistrictNotFound` | 404 | District not found | The district is in no plan — an observation, since every plan was read at startup |
-| `PdfError` | 500 | Internal server error | Startup: bytes downloaded but unparseable — our own fault |
-| `Upstream`, `ServiceUnavailable` | 503 | Service temporarily unavailable… | Startup: source unreachable/non-2xx/not-a-PDF/timed out, or no plan could be read at all |
-| `PdfNotFound` | 503 | Service temporarily unavailable… | Startup: plan retired upstream. Skipped by `build_index`, so it never propagates |
+
+That is the complete list because the route is: normalize, reject `""`, look up. The `#[utoipa::path]` annotation lists 200/400/404 to match.
+
+**`PlanError` is what reading a plan can fail with**, and it never becomes a response — `build_index` runs before the listener binds, and `main` logs the fault and exits 1. Two variants, because the startup path asks exactly two questions:
+
+| Variant | Meaning |
+|---------|---------|
+| `Retired(url)` | Upstream 404: the plan is gone. The only variant that exists for **control flow** — `build_index` matches on it to skip the plan with a WARN |
+| `Failed(detail)` | Everything else: unreachable, non-2xx, wrong content-type, timed out, over the size cap, unparseable bytes. All fatal, all handled identically |
+
+`Failed` is deliberately one variant and not five. The old `AppError` drew finer lines (`Upstream`, `ServiceUnavailable`, `PdfError`), but nothing ever matched on them: they differed only in a status code and a client message that no client could reach. What actually tells those faults apart is the **message**, which is why the tests assert on substrings (`"advertises"`, `"exceeds the"`, `"text/html"`, `"cross-reference"`) rather than on the variant — a variant match would now assert nothing.
+
+**Why the split at all:** with the startup faults in `AppError`, `IntoResponse` carried status codes and client messages for four cases that could not occur, and `test_errors.rs` maintained the no-disclosure invariant over messages nobody serves. Both are now scoped to what is actually served.
+
+`AppError`'s `Display` is still the internal detail (axum's rejection text) and is logged, never serialized; `into_response` logs at DEBUG for 4xx so caller noise stays off the default filter, and keeps the ERROR branch for a future 5xx variant so one could not be added and then vanish under the default filter. `PlanError`'s `Display` may name plan URLs and library text freely — nothing serializes it.
+
+**Nothing a client can observe may reveal that this service fetches and parses PDFs from a third party** — not the message, not the status code, not the `/docs` response descriptions. Since the split this is mostly true by construction: no `AppError` variant even has a plan URL to leak. `test_no_variant_discloses_the_data_source` stays anyway, because the invariant is about what may be *added* — a variant carrying upstream text is the first thing someone would write if request-time fetching ever came back. `assert_every_variant_is_covered` next to it is an exhaustive `match` that exists only to stop compiling when `AppError` grows.
+
+`lk_rosenheim_handler` takes `Result<Query<DistrictQuery>, QueryRejection>` rather than a bare `Query` so the 400 also becomes an `AppError` — axum's own rejection is a plain-text body, which would be the one response not matching the documented `ErrorDetail` schema.
 
 ## Download Size Cap
 
-`download.rs` caps plan PDFs at `MAX_PDF_BYTES` (16 MiB) with **two** guards: a `Content-Length` pre-check and an accumulating check inside the `chunk()` read loop. The second is not redundant — `Content-Length` can be absent (chunked transfer) or wrong. Both produce the same `Upstream` variant, so their tests assert on the internal detail (`"advertises"` vs `"exceeds the"`); the variant alone would let either guard be deleted silently.
+`download.rs` caps plan PDFs at `MAX_PDF_BYTES` (16 MiB) with **two** guards: a `Content-Length` pre-check and an accumulating check inside the `chunk()` read loop. The second is not redundant — `Content-Length` can be absent (chunked transfer) or wrong. Both produce the same `PlanError::Failed` variant — as does every other startup fault — so their tests assert on the internal detail (`"advertises"` vs `"exceeds the"`); the variant alone would let either guard be deleted silently.
 
 ## Test Coverage
 
-`cargo llvm-cov` line coverage is ~83 % — ≈96 % excluding the `main.rs` server-bootstrap entrypoint, which is 90 uncovered lines. The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout path is intentionally untested (fixed `DOWNLOAD_TIMEOUT`, 30 s, in `index.rs`); `test_errors.rs` covers the variant's mapping instead. `cache.rs`'s remaining gaps are `put`'s write/rename error arms — reaching them needs a directory that turns unwritable *between* `from_env` and the write, and they all do the same thing (WARN, carry on) as the `from_env` path that is covered.
+`cargo llvm-cov` line coverage is ~83 % — ≈96 % excluding the `main.rs` server-bootstrap entrypoint, which is 90 uncovered lines. The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout path is intentionally untested (fixed `DOWNLOAD_TIMEOUT`, 30 s, in `index.rs`); `test_errors.rs` covers the variant's mapping instead. `cache.rs`'s remaining gaps are `put`'s write/rename error arms — reaching them needs a directory that turns unwritable *between* `from_env` and the write, and they all do the same thing (WARN, carry on) as the `from_env` path that is covered. `errors.rs` shows two uncovered lines for the `is_server_error()` branch in `into_response`, which no current variant can reach; see above for why it stays.
 
 The split follows where things can fail: `tests/test_index.rs` drives `build_index`/`AppState::build` and owns every download and parse fault (mockito, the size caps, retired plans); `tests/test_cache.rs` drives the same function with an enabled cache and owns the four decisions in the table above; `tests/test_api.rs` drives the router over a seeded or fixture-built index and owns what a client can still observe (hit, miss, bad parameter). Helpers more than one binary needs — the fixture bytes, `plan`, `mock_fixture`, `temp_dir`, `state_from_fixture`, `body_to_json`, `get`, `EventRecorder` — live in `tests/common/mod.rs`, which carries a blanket `#![allow(dead_code)]` because each binary uses a different subset.
 
@@ -149,6 +161,6 @@ See the `docker-build` skill (`.claude/skills/docker-build/SKILL.md`) for the im
 
 - **All code comments must be in English** — never write German comments, even when the conversation is in German.
 - **Edition 2024** — requires Rust ≥ 1.85.
-- No `unwrap()` in production paths; errors propagate via `AppError`.
+- No `unwrap()` in production paths; errors propagate via `AppError` (request path) or `PlanError` (startup path).
 - Date format from PDFs: `%d.%m.%y` (e.g. `06.01.26`). Returned as RFC 3339 UTC strings (`Utc.from_utc_datetime(&dt).to_rfc3339()`).
 - `DistrictIndex` is keyed by the **normalized** district name (`pdf_parser::normalize_district`), and every lookup has to normalize first. `DistrictIndex::from_pairs` normalizes what it is given, so a test cannot seed a key `lookup` could never reach.

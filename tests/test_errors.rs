@@ -26,50 +26,14 @@ async fn test_bad_request_response() {
 }
 
 #[tokio::test]
-async fn test_service_unavailable_response() {
-    let response =
-        AppError::ServiceUnavailable("https://secret.internal/plan.pdf timed out".to_string())
-            .into_response();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+async fn test_the_internal_detail_never_reaches_the_client() {
+    // `BadRequest` is the only variant carrying free text — axum's rejection
+    // string. It is logged, never serialized, and this is what pins that.
+    let response = AppError::BadRequest("Failed to deserialize query string: xyzzy".to_string())
+        .into_response();
     let body = body_to_json(response).await;
-    assert_eq!(
-        body["detail"],
-        "Service temporarily unavailable, please try again later"
-    );
-    // The URL is what makes the *log* useful; it must still not reach the client.
-    assert!(!body["detail"].as_str().unwrap().contains("secret.internal"));
-}
-
-#[tokio::test]
-async fn test_upstream_response() {
-    let response =
-        AppError::Upstream("https://secret.internal/plan.pdf exploded".to_string()).into_response();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body = body_to_json(response).await;
-    assert_eq!(
-        body["detail"],
-        "Service temporarily unavailable, please try again later"
-    );
-    // The internal detail (here: an upstream URL) must not reach the client.
-    assert!(!body["detail"].as_str().unwrap().contains("secret.internal"));
-}
-
-#[tokio::test]
-async fn test_pdf_not_found_response() {
-    let response =
-        AppError::PdfNotFound("https://secret.internal/plan.pdf".to_string()).into_response();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body = body_to_json(response).await;
-    assert!(!body["detail"].as_str().unwrap().contains("secret.internal"));
-}
-
-#[tokio::test]
-async fn test_pdf_error_response() {
-    let response = AppError::PdfError("boom at offset 0x41".to_string()).into_response();
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let body = body_to_json(response).await;
-    assert_eq!(body["detail"], "Internal server error");
-    assert!(!body["detail"].as_str().unwrap().contains("boom"));
+    assert_eq!(body["detail"], "Invalid or missing query parameter");
+    assert!(!body["detail"].as_str().unwrap().contains("xyzzy"));
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +42,12 @@ async fn test_pdf_error_response() {
 // is covered without anyone remembering to extend this file. A brand-new
 // *variant* is a different matter — `assert_every_variant_is_covered` below
 // turns that into a compile error rather than a silent gap.
+//
+// Since the startup faults moved to `PlanError` this is mostly true by
+// construction: no variant left even has a plan URL to leak. The test stays
+// because the invariant is about what may be *added*, not about what is here —
+// and a variant carrying upstream text is exactly what someone would add first
+// if request-time fetching ever came back.
 // ---------------------------------------------------------------------------
 
 /// Makes the list below exhaustive by construction: adding a variant to
@@ -90,22 +60,17 @@ fn assert_every_variant_is_covered(e: &AppError) {
     match e {
         AppError::BadRequest(_) => {}
         AppError::DistrictNotFound => {}
-        AppError::ServiceUnavailable(_) => {}
-        AppError::Upstream(_) => {}
-        AppError::PdfNotFound(_) => {}
-        AppError::PdfError(_) => {}
     }
 }
 
 #[tokio::test]
 async fn test_no_variant_discloses_the_data_source() {
+    // The free text is deliberately full of things that must not come out the
+    // other side, so the test would fail loudly if a variant ever started
+    // echoing its internal detail.
     let variants = [
-        AppError::BadRequest("missing field `district`".to_string()),
+        AppError::BadRequest("https://chiemgau-recycling.test/plan.pdf: 500".to_string()),
         AppError::DistrictNotFound,
-        AppError::ServiceUnavailable("https://chiemgau-recycling.test/plan.pdf".to_string()),
-        AppError::Upstream("https://chiemgau-recycling.test/plan.pdf: 500".to_string()),
-        AppError::PdfNotFound("https://chiemgau-recycling.test/plan.pdf".to_string()),
-        AppError::PdfError("xref table malformed".to_string()),
     ];
 
     // Substrings that would each betray the architecture: the file format, the

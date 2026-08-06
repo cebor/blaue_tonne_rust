@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 
 use blaue_tonne_rust::AppState;
 use blaue_tonne_rust::cache::PdfCache;
-use blaue_tonne_rust::errors::AppError;
+use blaue_tonne_rust::errors::PlanError;
 use blaue_tonne_rust::index::build_index;
 use blaue_tonne_rust::pdf_parser::index_districts;
 
@@ -119,7 +119,7 @@ async fn test_upstream_server_error_refuses_to_start() {
     )
     .await;
     assert!(
-        matches!(result, Err(AppError::Upstream(ref d)) if d.contains("500")),
+        matches!(result, Err(PlanError::Failed(ref d)) if d.contains("500")),
         "expected an upstream fault, got: {result:?}"
     );
 }
@@ -141,7 +141,7 @@ async fn test_wrong_content_type_refuses_to_start() {
     )
     .await;
     assert!(
-        matches!(result, Err(AppError::Upstream(ref d)) if d.contains("text/html")),
+        matches!(result, Err(PlanError::Failed(ref d)) if d.contains("text/html")),
         "expected the content-type guard to reject, got: {result:?}"
     );
 }
@@ -155,7 +155,7 @@ async fn test_url_without_a_pdf_path_refuses_to_start() {
     )
     .await;
     assert!(
-        matches!(result, Err(AppError::Upstream(ref d)) if d.contains(".pdf")),
+        matches!(result, Err(PlanError::Failed(ref d)) if d.contains(".pdf")),
         "expected the .pdf path guard to reject, got: {result:?}"
     );
 }
@@ -173,16 +173,18 @@ async fn test_unreachable_host_refuses_to_start() {
     )
     .await;
     assert!(
-        matches!(result, Err(AppError::Upstream(_))),
+        matches!(result, Err(PlanError::Failed(_))),
         "expected a transport fault, got: {result:?}"
     );
 }
 
 #[tokio::test]
 async fn test_corrupt_pdf_refuses_to_start() {
-    // Downloads fine, but the bytes are not a PDF — our own parse fails, so this
-    // stays a `PdfError` (a 500 were it ever to reach a client) and not an
-    // upstream fault.
+    // Downloads fine, but the bytes are not a PDF. `PlanError` no longer has a
+    // variant that separates "we could not fetch it" from "we could not read
+    // what we fetched" — every startup fault is handled identically — so the
+    // assertion is on the message, which is the only thing that still tells the
+    // two apart in a log.
     let mut server = mockito::Server::new_async().await;
     let _mock = server
         .mock("GET", "/corrupt.pdf")
@@ -198,8 +200,8 @@ async fn test_corrupt_pdf_refuses_to_start() {
     )
     .await;
     assert!(
-        matches!(result, Err(AppError::PdfError(_))),
-        "expected a parse fault, got: {result:?}"
+        matches!(result, Err(PlanError::Failed(ref d)) if d.contains("cross-reference")),
+        "expected the parse to fail, not the fetch, got: {result:?}"
     );
 }
 
@@ -236,7 +238,7 @@ async fn test_oversized_pdf_content_length_refuses_to_start() {
     )
     .await;
     assert!(
-        matches!(result, Err(AppError::Upstream(ref d)) if d.contains("advertises")),
+        matches!(result, Err(PlanError::Failed(ref d)) if d.contains("advertises")),
         "expected the content-length pre-check to reject, got: {result:?}"
     );
 }
@@ -268,7 +270,7 @@ async fn test_oversized_chunked_pdf_refuses_to_start() {
     )
     .await;
     assert!(
-        matches!(result, Err(AppError::Upstream(ref d)) if d.contains("exceeds the")),
+        matches!(result, Err(PlanError::Failed(ref d)) if d.contains("exceeds the")),
         "expected the in-loop cap to reject, got: {result:?}"
     );
 }
@@ -336,7 +338,7 @@ async fn test_only_plan_retired_refuses_to_start() {
     )
     .await;
     assert!(
-        matches!(result, Err(AppError::Upstream(ref d)) if d.contains("none of the 1")),
+        matches!(result, Err(PlanError::Failed(ref d)) if d.contains("none of the 1")),
         "a retired-only config must not start, got: {result:?}"
     );
 }
@@ -345,7 +347,7 @@ async fn test_only_plan_retired_refuses_to_start() {
 async fn test_no_plans_refuses_to_start() {
     let result = build_index(&[], &PdfCache::disabled()).await;
     assert!(
-        matches!(result, Err(AppError::Upstream(ref d)) if d.contains("none of the 0")),
+        matches!(result, Err(PlanError::Failed(ref d)) if d.contains("none of the 0")),
         "an empty plans.yaml must not start, got: {result:?}"
     );
 }

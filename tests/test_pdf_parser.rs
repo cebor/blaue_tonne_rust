@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use blaue_tonne_rust::errors::AppError;
+use blaue_tonne_rust::errors::PlanError;
 use blaue_tonne_rust::pdf_parser::{index_districts, normalize_district};
 
 fn fixture_pdf() -> Vec<u8> {
@@ -108,11 +108,12 @@ fn test_unknown_district_is_absent_from_the_index() {
 fn test_invalid_bytes_rejected() {
     // index_districts doesn't validate the URL – that's done in download_pdf.
     // But we can verify invalid bytes are handled gracefully.
+    // `index_districts` can only ever produce `PlanError::Failed`, so matching
+    // the variant would assert nothing — the message is what carries the reason.
     let result = index_districts(b"not a pdf", "1");
     assert!(
-        matches!(result, Err(AppError::PdfError(_))),
-        "expected PdfError for invalid bytes, got: {:?}",
-        result
+        matches!(result, Err(PlanError::Failed(ref d)) if d.contains("cross-reference")),
+        "expected a parse failure for invalid bytes, got: {result:?}"
     );
 }
 
@@ -123,9 +124,8 @@ fn test_page_past_the_end_of_the_document_is_an_error() {
     let pdf = fixture_pdf();
     let result = index_districts(&pdf, "999");
     assert!(
-        matches!(result, Err(AppError::PdfError(_))),
-        "expected PdfError for an out-of-range page, got: {:?}",
-        result
+        matches!(result, Err(PlanError::Failed(ref d)) if d.contains("Page index 998")),
+        "expected the out-of-range page to be named, got: {result:?}"
     );
 }
 

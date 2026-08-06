@@ -4,7 +4,7 @@ use chrono::NaiveDate;
 use pdf_oxide::PdfDocument;
 use pdf_oxide::layout::TextSpan;
 
-use crate::errors::AppError;
+use crate::errors::PlanError;
 
 const DATE_LENGTH: usize = 8;
 const Y_TOLERANCE: f32 = 5.0;
@@ -48,10 +48,10 @@ fn parse_page_numbers(pages: &str) -> Vec<usize> {
 }
 
 /// Extract the reconstructed table rows of one page.
-fn extract_rows(doc: &PdfDocument, page_idx: usize) -> Result<Vec<Vec<String>>, AppError> {
+fn extract_rows(doc: &PdfDocument, page_idx: usize) -> Result<Vec<Vec<String>>, PlanError> {
     let spans = doc
         .extract_spans(page_idx)
-        .map_err(|e| AppError::PdfError(e.to_string()))?;
+        .map_err(|e| PlanError::failed(e.to_string()))?;
     Ok(spans_to_rows(&spans))
 }
 
@@ -108,9 +108,9 @@ pub fn normalize_district(district: &str) -> String {
 pub fn index_districts(
     pdf_bytes: &[u8],
     pages: &str,
-) -> Result<HashMap<String, Vec<NaiveDate>>, AppError> {
+) -> Result<HashMap<String, Vec<NaiveDate>>, PlanError> {
     let doc = PdfDocument::from_bytes(pdf_bytes.to_vec())
-        .map_err(|e| AppError::PdfError(e.to_string()))?;
+        .map_err(|e| PlanError::failed(e.to_string()))?;
 
     let mut index: HashMap<String, Vec<NaiveDate>> = HashMap::new();
 

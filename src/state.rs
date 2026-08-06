@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::cache::PdfCache;
 use crate::config::Plan;
-use crate::errors::AppError;
+use crate::errors::PlanError;
 use crate::index::{DistrictIndex, build_index};
 
 /// Shared application state (public so integration tests can build it).
@@ -17,7 +17,7 @@ pub struct AppState {
 impl AppState {
     /// Read every configured plan and build the index. See [`build_index`] for
     /// what makes this fail — it is meant to be fatal at startup.
-    pub async fn build(plans: &[Plan], cache: &PdfCache) -> Result<Self, AppError> {
+    pub async fn build(plans: &[Plan], cache: &PdfCache) -> Result<Self, PlanError> {
         Ok(Self::from_index(build_index(plans, cache).await?))
     }
 
