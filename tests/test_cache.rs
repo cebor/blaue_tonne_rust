@@ -292,6 +292,45 @@ async fn test_a_corrupt_cache_file_is_replaced_rather_than_fatal() {
     cleanup(&dir);
 }
 
+#[tokio::test]
+async fn test_bytes_that_will_not_parse_are_never_cached() {
+    let dir = temp_dir("cache_unparseable");
+    let mut server = mockito::Server::new_async().await;
+    // A well-formed response — 200, the right content-type — carrying bytes the
+    // parser cannot read. The download succeeds, so `put` is reachable; only the
+    // ordering inside `build_index` keeps the bytes off the disk.
+    let _mock = server
+        .mock("GET", "/schedule.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body("not a pdf at all")
+        .create_async()
+        .await;
+
+    let plans = [plan(
+        format!("{}/schedule.pdf", server.url()),
+        FIXTURE_PAGES,
+    )];
+    let cache = PdfCache::new(dir.clone(), FRESH);
+
+    let result = build_index(&plans, &cache).await;
+    assert!(
+        matches!(result, Err(PlanError::Failed(_))),
+        "a plan that will not parse is still fatal: {result:?}"
+    );
+    // `put` runs after the parse, so nothing was written. Were it the other way
+    // round, the next start would find a *fresh* entry it has to detect as bad
+    // and throw away, and a later outage would fall back to a copy that cannot
+    // be read either — both avoidable by never storing the bytes.
+    assert_eq!(
+        files_in(&dir),
+        Vec::<String>::new(),
+        "bytes that did not parse must not reach the cache"
+    );
+
+    cleanup(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // Switched off
 // ---------------------------------------------------------------------------
