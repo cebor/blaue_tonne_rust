@@ -211,9 +211,10 @@ async fn test_corrupt_pdf_refuses_to_start() {
 // single large fixed body only ever reaches the first, because mockito sets
 // Content-Length for it and the loop never runs.
 //
-// Both produce the same `Upstream` variant, so the variant alone cannot tell
-// them apart: each test would still pass with its own guard removed. The
-// internal detail is what distinguishes them, so that is what these assert on.
+// Both produce the same `PlanError::Failed` variant — as does every other
+// startup fault — so the variant alone cannot tell them apart: each test would
+// still pass with its own guard removed. The message is what distinguishes
+// them, so that is what these assert on.
 // ---------------------------------------------------------------------------
 
 /// Mirrors `MAX_PDF_BYTES` in `src/download.rs`. Kept as a literal rather than

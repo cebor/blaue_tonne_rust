@@ -21,14 +21,11 @@ Within the traced sub-router, `ip_middleware` is added last (`.layer()`) so it i
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PLANS_PATH` | `plans.yaml` | Path to plans YAML config. Read once, at startup — a change needs a restart |
-| `BIND_ADDR` | `0.0.0.0:8080` | TCP address to listen on |
-| `FORWARDED_ALLOW_IPS` | *(empty)* | Comma-separated IPs/CIDRs whose `X-Forwarded-For` is trusted; use `*` to trust all |
-| `RUST_LOG` | `blaue_tonne_rust=info` | Standard `tracing-subscriber` filter. When unset, falls back to `blaue_tonne_rust=info`; when set it takes full control. `/health` is never logged regardless — it is outside the traced router. |
-| `PDF_CACHE_DIR` | `$XDG_CACHE_HOME/blaue_tonne_rust`, else `$HOME/.cache/…`, else `$TMPDIR/…` | Where downloaded plan PDFs are kept. **Set but empty turns the cache off**; unset means the default path. `/cache` in the container |
-| `PDF_CACHE_TTL` | `30d` | How long a cached plan counts as fresh. `30d`/`12h`/`90m`/`45s`, or a bare number of seconds. Invalid input warns and falls back |
+**The full table lives in [README.md](README.md#environment-variables)** and is the one to edit when a variable changes. Kept here are only the three whose *behaviour* the rest of this file argues about:
+
+- **`PLANS_PATH`** is read exactly once, at startup. A new plan needs a restart — see below for why that is the accepted cost and not an oversight.
+- **`RUST_LOG`** takes full control when set; only when it is absent does the `blaue_tonne_rust=info` fallback apply. `/health` is never logged at any level, because it is registered outside the traced router rather than filtered out.
+- **`PDF_CACHE_DIR`** unset means the default path, set-but-empty means the cache is off. One variable for both, deliberately — see the cache section.
 
 ## PDF Parsing
 
@@ -46,6 +43,8 @@ Row reconstruction in `src/pdf_parser.rs` sorts `pdf_oxide` spans by Y descendin
 
 **A plan that can be read from neither the source nor the cache is fatal.** There is no second attempt at request time any more, so starting anyway would mean serving a district short of its dates for the lifetime of the process, silently — the failure would live in the data instead of in the status. `main` logs the fault at ERROR and exits 1, which a container restart makes visible.
 
+Loading `plans.yaml` fails the same way, through the same `match`-log-exit shape rather than an `expect`. Both are startup faults whose detail (a path, a URL, a serde message) belongs in tracing next to every other one — a panic would put it on stderr in a different format and add a backtrace nobody needs.
+
 **The one exception is an upstream 404**, which means the plan is *gone* — expected at the turn of the year, when last year's PDF goes offline while it is still listed in `plans.yaml`, and permanent until someone prunes the config. Treating that as fatal would keep the service down for weeks over a plan nobody needs. It is skipped with a WARN naming the URL — once, at startup, so there is no per-request log flooding to weigh against saying it loudly.
 
 **`plans_indexed == 0` is fatal too.** Every plan retired, or none configured, means nothing was read: an empty index would answer "District not found" for every name in the county, an assertion about data nobody looked at. Refusing to start is what makes a fully stale `plans.yaml` impossible to miss (`test_only_plan_retired_refuses_to_start`, `test_no_plans_refuses_to_start`). A plan served from the cache counts as indexed.
@@ -58,7 +57,7 @@ Row reconstruction in `src/pdf_parser.rs` sorts `pdf_oxide` spans by Y descendin
 
 **Unset `PDF_CACHE_DIR` ≠ empty `PDF_CACHE_DIR`.** Unset picks the default location, empty switches the cache off. One variable therefore covers both the path and the off switch; a separate `PDF_CACHE_ENABLED` would allow "enabled, no path", a contradiction someone would have to define behaviour for. `config::cache_dir_from` holds the resolution logic as a pure function of the three env values so it is testable without mutating process-wide environment — only `PdfCache::from_env`'s two edge cases need `set_var`, and they share one serial `#[test]`.
 
-**Key:** `{sha256(url)[..16 hex]}-{URL's own file name}`. The hash makes it unique and filesystem-safe for any URL (including one with `/` or `..` in it); the readable tail is what lets `ls` on the cache directory say which plan is which. Deliberately not `DefaultHasher`, whose output is explicitly unstable across Rust releases — the cache would silently empty itself on every toolchain upgrade. `put` writes to `{name}.tmp-{pid}` and renames, so a crash cannot leave a half-written PDF that a later start reads back as corrupt.
+**Key:** `{sha256(url)[..16 hex]}-{URL's own file name}`. The hash makes it unique and filesystem-safe for any URL (including one with `/` or `..` in it); the readable tail is what lets `ls` on the cache directory say which plan is which. Deliberately not `DefaultHasher`, whose output is explicitly unstable across Rust releases — the cache would silently empty itself on every toolchain upgrade. `put` writes to a sibling temp file (the key with its extension replaced by `tmp-{pid}`) and renames it into place, so a crash cannot leave a half-written PDF that a later start reads back as corrupt. It is also called **after** the parse succeeds, not before: bytes that will not parse are never written, so the next start does not find a fresh entry it has to throw away, and a later outage does not fall back to a copy that cannot be read either.
 
 `put` returns `()`, not `Result`: no caller could act on a failure differently than by carrying on with the bytes it already holds. Every fault in the module — unwritable directory, unreadable file, failed rename — degrades to "no cache" plus a log line. The cache is an optimization, never a data path, and nothing in it can make the service fail.
 
@@ -88,6 +87,10 @@ Dates for a district that several plans carry are concatenated in plan order —
 **An empty or whitespace-only `district` is still rejected up front** (400). `normalize_district` strips whitespace, so both normalize to `""`, which is not a name; without the guard they would fall through to a plain index miss and answer 404, reporting a district the caller never named as missing.
 
 **Consequence: `plans.yaml` is read exactly once.** A new plan, or a corrected PDF under an unchanged URL, needs a restart. This is the accepted cost of the design, not an oversight.
+
+## Download Size Cap
+
+`download.rs` caps plan PDFs at `MAX_PDF_BYTES` (16 MiB) with **two** guards: a `Content-Length` pre-check and an accumulating check inside the `chunk()` read loop. The second is not redundant — `Content-Length` can be absent (chunked transfer) or wrong. Both produce the same `PlanError::Failed` variant — as does every other startup fault — so their tests assert on the internal detail (`"advertises"` vs `"exceeds the"`); the variant alone would let either guard be deleted silently.
 
 ## Two error types, split by whether anyone can see them
 
@@ -119,13 +122,9 @@ That is the complete list because the route is: normalize, reject `""`, look up.
 
 `lk_rosenheim_handler` takes `Result<Query<DistrictQuery>, QueryRejection>` rather than a bare `Query` so the 400 also becomes an `AppError` — axum's own rejection is a plain-text body, which would be the one response not matching the documented `ErrorDetail` schema.
 
-## Download Size Cap
-
-`download.rs` caps plan PDFs at `MAX_PDF_BYTES` (16 MiB) with **two** guards: a `Content-Length` pre-check and an accumulating check inside the `chunk()` read loop. The second is not redundant — `Content-Length` can be absent (chunked transfer) or wrong. Both produce the same `PlanError::Failed` variant — as does every other startup fault — so their tests assert on the internal detail (`"advertises"` vs `"exceeds the"`); the variant alone would let either guard be deleted silently.
-
 ## Test Coverage
 
-`cargo llvm-cov` line coverage is ~83 % — ≈96 % excluding the `main.rs` server-bootstrap entrypoint, which is 90 uncovered lines. The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout path is intentionally untested (fixed `DOWNLOAD_TIMEOUT`, 30 s, in `index.rs`); `test_errors.rs` covers the variant's mapping instead. `cache.rs`'s remaining gaps are `put`'s write/rename error arms — reaching them needs a directory that turns unwritable *between* `from_env` and the write, and they all do the same thing (WARN, carry on) as the `from_env` path that is covered. `errors.rs` shows two uncovered lines for the `is_server_error()` branch in `into_response`, which no current variant can reach; see above for why it stays.
+`cargo llvm-cov` line coverage is ~83 % — ≈96 % excluding the `main.rs` server-bootstrap entrypoint, which is 90 uncovered lines. The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout path is intentionally untested: the timeout is a fixed `DOWNLOAD_TIMEOUT` (30 s, in `index.rs`), so provoking it would mean a test that sleeps. What it produces is a `PlanError::Failed` from `transport_error` — the same arm every other transport fault takes, and `test_unreachable_host_refuses_to_start` covers it via a `.invalid` host that never resolves. `cache.rs`'s remaining gaps are `put`'s write/rename error arms — reaching them needs a directory that turns unwritable *between* `from_env` and the write, and they all do the same thing (WARN, carry on) as the `from_env` path that is covered. `errors.rs` shows two uncovered lines for the `is_server_error()` branch in `into_response`, which no current variant can reach; see above for why it stays.
 
 The split follows where things can fail: `tests/test_index.rs` drives `build_index`/`AppState::build` and owns every download and parse fault (mockito, the size caps, retired plans); `tests/test_cache.rs` drives the same function with an enabled cache and owns the four decisions in the table above; `tests/test_api.rs` drives the router over a seeded or fixture-built index and owns what a client can still observe (hit, miss, bad parameter). Helpers more than one binary needs — the fixture bytes, `plan`, `mock_fixture`, `temp_dir`, `state_from_fixture`, `body_to_json`, `get`, `EventRecorder` — live in `tests/common/mod.rs`, which carries a blanket `#![allow(dead_code)]` because each binary uses a different subset.
 
@@ -142,7 +141,7 @@ Tests that assert on log output (`EventRecorder` in `tests/common`, `TraceRecord
 
 ## `plans.yaml`
 
-`pages` is passed directly to `index_districts`, which parses the comma-separated 1-based page numbers and uses them as 0-based indices for `pdf_oxide`. A page number past the end of the document is a `PdfError` — and now a refused startup rather than a per-request 500.
+`pages` is passed directly to `index_districts`, which parses the comma-separated 1-based page numbers and uses them as 0-based indices for `pdf_oxide`. A page number past the end of the document is a `PlanError::Failed`, and therefore a refused startup — a wrong `pages` value cannot survive as a district quietly missing its dates.
 
 `url` is validated in `config::validate_plan_url` at load time — scheme must be `http`/`https`, and the URL **path** must end in `.pdf`. Matching on the path rather than the whole string is what lets a link carry a query string or fragment (`…/Abfuhrplan_2027.pdf?v=2`). `download.rs` keeps an equivalent path-based check as a guard for callers that build a URL some other way.
 

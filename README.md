@@ -138,12 +138,18 @@ cargo test --test test_api
 cargo test -- --nocapture
 ```
 
-**Test coverage:**
-- 57 PDF parser tests: one per district against the fixture PDF, plus district-name normalization
-- 14 index-build tests (startup faults, retired plans, download size caps, mock HTTP server)
-- 12 API integration tests (health, lookups, error responses)
-- 14 config tests (incl. plan-URL validation), 9 middleware tests, 7 error-response tests
-- 5 inline unit tests for internal parsing helpers
+**What each suite covers** (counts deliberately omitted — they go stale on every commit):
+
+| Suite | Owns |
+|---|---|
+| `test_pdf_parser.rs` | One test per district against the fixture PDF, plus name normalization and the parser's own error paths |
+| `test_index.rs` | The startup build: download and parse faults, retired plans, the two download size caps, a refused start |
+| `test_cache.rs` | The on-disk cache: a fresh hit that makes no request, an unusable entry, the stale fallback, the off switch |
+| `test_api.rs` | What a client can still observe: hit, miss, bad parameter |
+| `test_config.rs` | Loading `plans.yaml`, plan-URL validation, cache-directory and TTL resolution, the proxy allowlist |
+| `test_middleware.rs` | Client-IP resolution, the X-Forwarded-For allowlist, and that `/health` stays untraced |
+| `test_errors.rs` | `AppError` → HTTP response, and that no variant discloses the data source |
+| inline `#[cfg(test)]` | Cache file naming and internal parsing helpers |
 
 ### Docker
 
@@ -171,18 +177,20 @@ plans:
 
 The config path can be overridden with the `PLANS_PATH` env var. Changes take effect on the next restart — the plans are read once, when the process starts.
 
-Plan URLs are validated at startup: the scheme must be `http`/`https` and the URL *path* must end in `.pdf` (a query string or fragment is fine). A URL that fails this aborts the process with an explicit message, rather than turning into a 503 on every request.
+Plan URLs are validated as the config is read: the scheme must be `http`/`https` and the URL *path* must end in `.pdf` (a query string or fragment is fine). A URL that fails this aborts the process with a message naming it, rather than surfacing later as a failed fetch that blames the source for a typo of ours.
 
 ### Environment variables
 
+This table is the canonical list — `CLAUDE.md` documents only the reasoning behind individual entries and points back here.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PLANS_PATH` | `plans.yaml` | Path to the plans config. Read once, at startup |
+| `PLANS_PATH` | `plans.yaml` | Path to the plans config. Read once, at startup — a change needs a restart |
 | `BIND_ADDR` | `0.0.0.0:8080` | TCP address to listen on |
-| `FORWARDED_ALLOW_IPS` | *(empty)* | Comma-separated IPs/CIDRs whose `X-Forwarded-For` is trusted; `*` trusts all |
-| `RUST_LOG` | `blaue_tonne_rust=info` | `tracing-subscriber` filter. `/health` is never logged, at any level |
-| `PDF_CACHE_DIR` | `$XDG_CACHE_HOME/blaue_tonne_rust`, else `$HOME/.cache/…`, else `$TMPDIR/…` | Where downloaded plan PDFs are kept (`/cache` in the container) |
-| `PDF_CACHE_TTL` | `30d` | How long a cached plan counts as fresh. `30d`, `12h`, `90m`, `45s`, or a bare number of seconds |
+| `FORWARDED_ALLOW_IPS` | *(empty)* | Comma-separated IPs/CIDRs whose `X-Forwarded-For` is trusted; `*` trusts all. Invalid entries warn and are skipped |
+| `RUST_LOG` | `blaue_tonne_rust=info` | `tracing-subscriber` filter. When unset, falls back to `blaue_tonne_rust=info`; when set it takes full control. `/health` is never logged either way, at any level |
+| `PDF_CACHE_DIR` | `$XDG_CACHE_HOME/blaue_tonne_rust`, else `$HOME/.cache/…`, else `$TMPDIR/…` | Where downloaded plan PDFs are kept (`/cache` in the container). **Set but empty turns the cache off**; unset means the default path |
+| `PDF_CACHE_TTL` | `30d` | How long a cached plan counts as fresh. `30d`, `12h`, `90m`, `45s`, or a bare number of seconds. Invalid input warns and falls back |
 
 **Turning the cache off:** set `PDF_CACHE_DIR` to an *empty* value. Leaving it **unset** is different — that selects the default path. There is one variable for both the location and the off switch, so the two can never contradict each other.
 
