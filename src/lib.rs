@@ -1,8 +1,10 @@
 // Modules reached directly by the integration tests stay `pub`; everything the
 // tests only need indirectly is `pub(crate)` and surfaces through the re-exports
 // below, so there is exactly one public path per item.
+pub mod cache;
 pub mod config;
 pub mod errors;
+pub mod index;
 pub mod middleware;
 pub mod pdf_parser;
 

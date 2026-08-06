@@ -16,6 +16,7 @@ use tower::ServiceExt;
 use tracing::Level;
 
 use blaue_tonne_rust::ResolvedClientIp;
+use blaue_tonne_rust::index::DistrictIndex;
 use blaue_tonne_rust::middleware::{make_request_span, resolve_client_ip};
 use blaue_tonne_rust::{AppState, build_router};
 
@@ -229,9 +230,8 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TraceRecorder {
 ///
 /// Relies on `#[tokio::test]`'s current-thread runtime: `set_default` is
 /// thread-local, so anything the request does on another thread (a
-/// `multi_thread` flavour, or a route that hits `spawn_blocking` like
-/// `/lk_rosenheim`) would not be recorded. Keep the URIs here to routes that
-/// stay on the calling thread.
+/// `multi_thread` flavour, say) would not be recorded. Keep the URIs here to
+/// routes that stay on the calling thread.
 async fn record_trace(uri: &str) -> TraceRecorder {
     use tracing_subscriber::layer::SubscriberExt;
 
@@ -243,7 +243,7 @@ async fn record_trace(uri: &str) -> TraceRecorder {
     let subscriber = tracing_subscriber::registry().with(recorder.clone());
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let app = build_router(AppState::new(vec![]), vec![]);
+    let app = build_router(AppState::from_index(DistrictIndex::default()), vec![]);
     let response = app
         .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
         .await

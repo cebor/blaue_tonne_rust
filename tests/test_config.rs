@@ -1,7 +1,10 @@
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Duration;
 
-use blaue_tonne_rust::config::{load_plans, parse_forwarded_allow_ips};
+use blaue_tonne_rust::config::{
+    DEFAULT_CACHE_TTL, cache_dir_from, load_plans, parse_cache_ttl, parse_forwarded_allow_ips,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -180,4 +183,96 @@ fn test_parse_allow_ips_ipv6() {
     let nets = parse_forwarded_allow_ips("::1");
     assert_eq!(nets.len(), 1);
     assert!(nets[0].contains(&"::1".parse::<std::net::IpAddr>().unwrap()));
+}
+
+// ---------------------------------------------------------------------------
+// parse_cache_ttl
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_parse_cache_ttl_accepts_every_suffix() {
+    assert_eq!(parse_cache_ttl("45s"), Duration::from_secs(45));
+    assert_eq!(parse_cache_ttl("90m"), Duration::from_secs(90 * 60));
+    assert_eq!(parse_cache_ttl("12h"), Duration::from_secs(12 * 3600));
+    assert_eq!(parse_cache_ttl("30d"), Duration::from_secs(30 * 86_400));
+    assert_eq!(parse_cache_ttl(" 7d "), Duration::from_secs(7 * 86_400));
+}
+
+#[test]
+fn test_parse_cache_ttl_treats_a_bare_number_as_seconds() {
+    assert_eq!(parse_cache_ttl("3600"), Duration::from_secs(3600));
+}
+
+#[test]
+fn test_parse_cache_ttl_zero_is_legal() {
+    // Not a mistake to correct: zero means "never fresh", which still writes the
+    // cache and so keeps the stale fallback working.
+    assert_eq!(parse_cache_ttl("0"), Duration::ZERO);
+    assert_eq!(parse_cache_ttl("0d"), Duration::ZERO);
+}
+
+#[test]
+fn test_parse_cache_ttl_falls_back_on_nonsense() {
+    // A typo in a cache knob must not keep the service from starting.
+    for raw in [
+        "",
+        "   ",
+        "soon",
+        "1w",
+        "-5",
+        "5.5h",
+        "99999999999999999999d",
+    ] {
+        assert_eq!(
+            parse_cache_ttl(raw),
+            DEFAULT_CACHE_TTL,
+            "{raw:?} should have fallen back"
+        );
+    }
+}
+
+#[test]
+fn test_default_cache_ttl_is_a_month() {
+    assert_eq!(DEFAULT_CACHE_TTL, Duration::from_secs(30 * 86_400));
+}
+
+// ---------------------------------------------------------------------------
+// cache_dir_from
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_cache_dir_prefers_an_explicit_path() {
+    assert_eq!(
+        cache_dir_from(Some("/var/cache/x"), Some("/xdg"), Some("/home/u")),
+        Some(PathBuf::from("/var/cache/x"))
+    );
+}
+
+#[test]
+fn test_an_empty_cache_dir_switches_the_cache_off() {
+    // The distinction the whole configuration rests on: *unset* means the
+    // default location, *set but empty* means off. One variable, no way to
+    // configure a contradiction.
+    assert_eq!(
+        cache_dir_from(Some(""), Some("/xdg"), Some("/home/u")),
+        None
+    );
+    assert_eq!(cache_dir_from(Some("  "), None, None), None);
+    assert!(cache_dir_from(None, Some("/xdg"), Some("/home/u")).is_some());
+}
+
+#[test]
+fn test_cache_dir_falls_back_xdg_then_home_then_temp() {
+    assert_eq!(
+        cache_dir_from(None, Some("/xdg"), Some("/home/u")),
+        Some(PathBuf::from("/xdg/blaue_tonne_rust"))
+    );
+    assert_eq!(
+        cache_dir_from(None, None, Some("/home/u")),
+        Some(PathBuf::from("/home/u/.cache/blaue_tonne_rust"))
+    );
+    assert_eq!(
+        cache_dir_from(None, Some(""), Some("")),
+        Some(std::env::temp_dir().join("blaue_tonne_rust"))
+    );
 }

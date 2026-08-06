@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::NaiveDate;
 use pdf_oxide::PdfDocument;
 use pdf_oxide::layout::TextSpan;
@@ -80,9 +82,10 @@ fn parse_dates_from_row(row: &[String]) -> Vec<NaiveDate> {
 ///
 /// District names in the PDF are stored as character fragments (e.g.
 /// "Bad Aibling" arrives as `["B", "ad", "A", "ib", "ling"]`), so all matching
-/// happens on the whitespace-stripped form. Callers that cache per district
-/// must key on this, otherwise "Bad Aibling", "BadAibling" and "B a d Aibling"
-/// all match the same row but occupy separate cache entries.
+/// happens on the whitespace-stripped form. [`index_districts`] keys on this,
+/// and a caller looking a district up has to apply it first — otherwise
+/// "Bad Aibling", "BadAibling" and "B a d Aibling" would not resolve to the one
+/// row they all name.
 ///
 /// Idempotent: applying it to an already-normalized name is a no-op.
 pub fn normalize_district(district: &str) -> String {
@@ -93,55 +96,70 @@ pub fn normalize_district(district: &str) -> String {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Extract waste collection dates for `district` from a PDF.
+/// Read every district of a plan PDF in one pass.
 ///
 /// `pdf_bytes` – raw bytes of the downloaded PDF.
 /// `pages`     – comma-separated 1-based page numbers, e.g. `"1,2"`.
-/// `district`  – district name to search for (must appear verbatim in a table cell).
 ///
-/// Returns the dates found on the district row and the following row.
-/// Returns `AppError::DistrictNotFound` when the district is not in any table.
-pub fn get_dates(
+/// Returns a map from the normalized district name (see [`normalize_district`])
+/// to its collection dates. The whole document is opened once, so looking a
+/// district up afterwards costs nothing — which is the point: the caller builds
+/// this map at startup instead of re-parsing the PDF per request.
+pub fn index_districts(
     pdf_bytes: &[u8],
     pages: &str,
-    district: &str,
-) -> Result<Vec<NaiveDate>, AppError> {
+) -> Result<HashMap<String, Vec<NaiveDate>>, AppError> {
     let doc = PdfDocument::from_bytes(pdf_bytes.to_vec())
         .map_err(|e| AppError::PdfError(e.to_string()))?;
 
-    // District names in the PDF may be stored as character fragments, so we
-    // concatenate all cells in a row and compare without spaces.
-    let district_key = normalize_district(district);
+    let mut index: HashMap<String, Vec<NaiveDate>> = HashMap::new();
 
     for page_idx in parse_page_numbers(pages) {
         let rows = extract_rows(&doc, page_idx)?;
 
         for (row_idx, row) in rows.iter().enumerate() {
-            let row_text: String = row
+            // A row that carries dates itself is a date row, not a name row.
+            // Skipping it keeps date strings out of the key space; no district
+            // name can look like one, so nothing reachable is lost.
+            if !parse_dates_from_row(row).is_empty() {
+                continue;
+            }
+
+            // District names in the PDF may be stored as character fragments
+            // ("Bad Aibling" arrives as ["B", "ad", "A", "ib", "ling"]), so the
+            // key is the whitespace-stripped concatenation of the whole row —
+            // exactly the form `normalize_district` produces.
+            let name: String = row
                 .iter()
                 .flat_map(|s| s.chars().filter(|c| !c.is_whitespace()))
                 .collect();
 
-            if row_text == district_key {
-                let mut dates: Vec<NaiveDate> = Vec::new();
-                // dates row BEFORE the name row (first half of the year)
-                if row_idx > 0
-                    && let Some(prev_row) = rows.get(row_idx - 1)
-                {
-                    dates.extend(parse_dates_from_row(prev_row));
-                }
-                // dates row AFTER the name row (second half of the year)
-                if let Some(next_row) = rows.get(row_idx + 1) {
-                    dates.extend(parse_dates_from_row(next_row));
-                }
-                if !dates.is_empty() {
-                    return Ok(dates);
-                }
+            if name.is_empty() {
+                continue;
+            }
+
+            let mut dates: Vec<NaiveDate> = Vec::new();
+            // dates row BEFORE the name row (first half of the year)
+            if row_idx > 0
+                && let Some(prev_row) = rows.get(row_idx - 1)
+            {
+                dates.extend(parse_dates_from_row(prev_row));
+            }
+            // dates row AFTER the name row (second half of the year)
+            if let Some(next_row) = rows.get(row_idx + 1) {
+                dates.extend(parse_dates_from_row(next_row));
+            }
+
+            // A name row without dates around it is not an entry — the same
+            // rule a per-district search follows when it keeps scanning past a
+            // match. First occurrence wins, so pages are read in order.
+            if !dates.is_empty() {
+                index.entry(name).or_insert(dates);
             }
         }
     }
 
-    Err(AppError::DistrictNotFound)
+    Ok(index)
 }
 
 // ---------------------------------------------------------------------------

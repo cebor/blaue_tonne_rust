@@ -1,31 +1,29 @@
 use std::sync::Arc;
 
-use bytes::Bytes;
-use chrono::NaiveDate;
-use dashmap::DashMap;
-use reqwest::Client;
-
+use crate::cache::PdfCache;
 use crate::config::Plan;
+use crate::errors::AppError;
+use crate::index::{DistrictIndex, build_index};
 
 /// Shared application state (public so integration tests can build it).
+///
+/// Nothing in here changes while the process runs: every plan is read once at
+/// startup, so serving a request is a map lookup and no more.
 #[derive(Clone)]
 pub struct AppState {
-    pub plans: Arc<Vec<Plan>>,
-    pub dates_cache: Arc<DashMap<String, Vec<NaiveDate>>>,
-    pub pdf_cache: Arc<DashMap<String, Bytes>>,
-    pub http_client: Client,
+    pub index: Arc<DistrictIndex>,
 }
 
 impl AppState {
-    pub fn new(plans: Vec<Plan>) -> Self {
+    /// Read every configured plan and build the index. See [`build_index`] for
+    /// what makes this fail — it is meant to be fatal at startup.
+    pub async fn build(plans: &[Plan], cache: &PdfCache) -> Result<Self, AppError> {
+        Ok(Self::from_index(build_index(plans, cache).await?))
+    }
+
+    pub fn from_index(index: DistrictIndex) -> Self {
         Self {
-            plans: Arc::new(plans),
-            dates_cache: Arc::new(DashMap::new()),
-            pdf_cache: Arc::new(DashMap::new()),
-            http_client: Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .expect("failed to build HTTP client"),
+            index: Arc::new(index),
         }
     }
 }
