@@ -12,6 +12,7 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+use blaue_tonne_rust::config::Plan;
 use blaue_tonne_rust::index::DistrictIndex;
 use blaue_tonne_rust::pdf_parser::index_districts;
 use blaue_tonne_rust::{AppState, build_router};
@@ -19,6 +20,44 @@ use blaue_tonne_rust::{AppState, build_router};
 /// Pages of the fixture that carry the district tables — the same value the
 /// production `plans.yaml` uses.
 pub const FIXTURE_PAGES: &str = "1,2";
+
+pub fn plan(url: String, pages: &str) -> Plan {
+    Plan {
+        url,
+        pages: pages.to_string(),
+    }
+}
+
+/// Registers a mock serving the fixture PDF at `path`.
+pub async fn mock_fixture(server: &mut mockito::ServerGuard, path: &str) -> mockito::Mock {
+    server
+        .mock("GET", path)
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body(fixture_pdf_bytes())
+        .create_async()
+        .await
+}
+
+/// A uniquely-named directory under the system temp dir, created empty.
+///
+/// Tests run in parallel and share the temp dir, so the name has to carry the
+/// pid and a timestamp — the same reason `write_temp` in `test_config.rs` does.
+/// There is no `tempfile` dependency; the caller removes it when done.
+pub fn temp_dir(name: &str) -> std::path::PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "blaue_tonne_test_{}_{}_{}",
+        name,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&path).expect("create temp dir");
+    path
+}
 
 pub fn fixture_pdf_bytes() -> Bytes {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

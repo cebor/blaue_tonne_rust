@@ -27,6 +27,8 @@ Within the traced sub-router, `ip_middleware` is added last (`.layer()`) so it i
 | `BIND_ADDR` | `0.0.0.0:8080` | TCP address to listen on |
 | `FORWARDED_ALLOW_IPS` | *(empty)* | Comma-separated IPs/CIDRs whose `X-Forwarded-For` is trusted; use `*` to trust all |
 | `RUST_LOG` | `blaue_tonne_rust=info` | Standard `tracing-subscriber` filter. When unset, falls back to `blaue_tonne_rust=info`; when set it takes full control. `/health` is never logged regardless — it is outside the traced router. |
+| `PDF_CACHE_DIR` | `$XDG_CACHE_HOME/blaue_tonne_rust`, else `$HOME/.cache/…`, else `$TMPDIR/…` | Where downloaded plan PDFs are kept. **Set but empty turns the cache off**; unset means the default path. `/cache` in the container |
+| `PDF_CACHE_TTL` | `30d` | How long a cached plan counts as fresh. `30d`/`12h`/`90m`/`45s`, or a bare number of seconds. Invalid input warns and falls back |
 
 ## PDF Parsing
 
@@ -42,11 +44,44 @@ Row reconstruction in `src/pdf_parser.rs` sorts `pdf_oxide` spans by Y descendin
 
 `build_index` (`src/index.rs`) downloads and parses every plan once, before `main` binds the listener. `AppState` holds nothing but the resulting `Arc<DistrictIndex>`; the `reqwest::Client` is local to the build, because after it returns the service does no network I/O at all. A request is `index.lookup(&normalize_district(name))` and nothing else.
 
-**A plan that cannot be read is fatal.** There is no second attempt at request time any more, so starting anyway would mean serving a district short of its dates for the lifetime of the process, silently — the failure would live in the data instead of in the status. `main` logs the fault at ERROR and exits 1, which a container restart makes visible. The trade-off is accepted deliberately: an upstream outage during boot is a restart loop, not a degraded service.
+**A plan that can be read from neither the source nor the cache is fatal.** There is no second attempt at request time any more, so starting anyway would mean serving a district short of its dates for the lifetime of the process, silently — the failure would live in the data instead of in the status. `main` logs the fault at ERROR and exits 1, which a container restart makes visible.
 
 **The one exception is an upstream 404**, which means the plan is *gone* — expected at the turn of the year, when last year's PDF goes offline while it is still listed in `plans.yaml`, and permanent until someone prunes the config. Treating that as fatal would keep the service down for weeks over a plan nobody needs. It is skipped with a WARN naming the URL — once, at startup, so there is no per-request log flooding to weigh against saying it loudly.
 
-**`plans_indexed == 0` is fatal too.** Every plan retired, or none configured, means nothing was read: an empty index would answer "District not found" for every name in the county, an assertion about data nobody looked at. Refusing to start is what makes a fully stale `plans.yaml` impossible to miss (`test_only_plan_retired_refuses_to_start`, `test_no_plans_refuses_to_start`).
+**`plans_indexed == 0` is fatal too.** Every plan retired, or none configured, means nothing was read: an empty index would answer "District not found" for every name in the county, an assertion about data nobody looked at. Refusing to start is what makes a fully stale `plans.yaml` impossible to miss (`test_only_plan_retired_refuses_to_start`, `test_no_plans_refuses_to_start`). A plan served from the cache counts as indexed.
+
+## The plan PDFs are cached on disk
+
+`src/cache.rs`. `build_index` takes a `&PdfCache` and consults it before every download, so a normal start does no network I/O at all — plans change once a year, and re-downloading identical bytes on every restart bought nothing.
+
+`PdfCache { dir: Option<PathBuf>, ttl: Duration }`. **`dir: None` is a disabled cache and is not a special case anywhere** — `get`/`put` are no-ops, and the three ways to get there (empty `PDF_CACHE_DIR`, a directory that could not be created, `PdfCache::disabled()` in tests) all converge on the same code. That is what keeps `build_index` free of "if caching is on" branches.
+
+**Unset `PDF_CACHE_DIR` ≠ empty `PDF_CACHE_DIR`.** Unset picks the default location, empty switches the cache off. One variable therefore covers both the path and the off switch; a separate `PDF_CACHE_ENABLED` would allow "enabled, no path", a contradiction someone would have to define behaviour for. `config::cache_dir_from` holds the resolution logic as a pure function of the three env values so it is testable without mutating process-wide environment — only `PdfCache::from_env`'s two edge cases need `set_var`, and they share one serial `#[test]`.
+
+**Key:** `{sha256(url)[..16 hex]}-{URL's own file name}`. The hash makes it unique and filesystem-safe for any URL (including one with `/` or `..` in it); the readable tail is what lets `ls` on the cache directory say which plan is which. Deliberately not `DefaultHasher`, whose output is explicitly unstable across Rust releases — the cache would silently empty itself on every toolchain upgrade. `put` writes to `{name}.tmp-{pid}` and renames, so a crash cannot leave a half-written PDF that a later start reads back as corrupt.
+
+`put` returns `()`, not `Result`: no caller could act on a failure differently than by carrying on with the bytes it already holds. Every fault in the module — unwritable directory, unreadable file, failed rename — degrades to "no cache" plus a log line. The cache is an optimization, never a data path, and nothing in it can make the service fail.
+
+The I/O is blocking `std::fs` on purpose. It happens only inside `build_index`, before the listener binds, when the runtime has nothing else to do — so there is no executor to starve and no need for tokio's `fs` feature.
+
+Four decisions in `build_index` that the code alone would not explain, each pinned by a test in `tests/test_cache.rs`:
+
+| Situation | Behaviour | Why |
+|---|---|---|
+| Fresh cache entry | Used, no request | The point of the feature |
+| Fresh entry that will not parse | WARN, refetch | Otherwise a corrupt file is a startup error **no restart can clear** |
+| Download fails, expired entry exists | WARN "serving a stale cached copy", start anyway | The dates were right when fetched and a plan changes once a year. This is what turns a boot-time outage from a restart loop into a degraded start |
+| Download 404s, entry exists | Entry ignored, plan skipped | 404 means *retired*. Serving the copy would keep a withdrawn plan alive for as long as the file survives |
+
+If the stale copy does not parse either, the **download** error is returned, not the parse error — the failed fetch is the cause, the unusable fallback only a consequence.
+
+**One INFO line per indexed plan**, from a single callsite at the end of the loop body:
+
+```
+indexed plan url=… source="cache" age_secs=9 districts=52
+```
+
+`source` is `url`, `cache`, or `stale-cache`; `age_secs` is 0 for `url` and the file's age otherwise. Deliberately a *field* rather than three different messages — the question "was this downloaded or read off disk?" should be answerable by filtering, not by knowing which wording each branch chose. `test_a_second_start_reads_the_plan_from_disk_and_makes_no_request` asserts on the two values, so the field is part of the interface rather than incidental log text. `stale-cache` comes *in addition to* the WARN, which stays: an operator scanning WARN must not have to reconstruct it from an INFO field.
 
 Dates for a district that several plans carry are concatenated in plan order — not deduplicated, not sorted. That is what lets a district keep both the old and the new plan's dates while both are configured.
 
@@ -78,9 +113,11 @@ Only the first two rows below are reachable over HTTP; the rest are startup faul
 
 ## Test Coverage
 
-`cargo llvm-cov` line coverage is ~80 % — ≈98 % excluding the `main.rs` server-bootstrap entrypoint, which is 89 uncovered lines and now a much larger share of a smaller crate than it used to be; the headline number fell while the tested code got *better* covered. The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout path is intentionally untested (fixed `DOWNLOAD_TIMEOUT`, 30 s, in `index.rs`); `test_errors.rs` covers the variant's mapping instead.
+`cargo llvm-cov` line coverage is ~83 % — ≈96 % excluding the `main.rs` server-bootstrap entrypoint, which is 90 uncovered lines. The IP-parsing logic was extracted from `main` into `config::parse_forwarded_allow_ips` so it can be unit-tested. The `download_pdf` timeout path is intentionally untested (fixed `DOWNLOAD_TIMEOUT`, 30 s, in `index.rs`); `test_errors.rs` covers the variant's mapping instead. `cache.rs`'s remaining gaps are `put`'s write/rename error arms — reaching them needs a directory that turns unwritable *between* `from_env` and the write, and they all do the same thing (WARN, carry on) as the `from_env` path that is covered.
 
-The split follows where things can fail: `tests/test_index.rs` drives `build_index`/`AppState::build` and owns every download and parse fault (mockito, the size caps, retired plans); `tests/test_api.rs` drives the router over a seeded or fixture-built index and owns what a client can still observe (hit, miss, bad parameter). Helpers both need — the fixture bytes, `state_from_fixture`, `body_to_json`, `get`, `EventRecorder` — live in `tests/common/mod.rs`, which carries a blanket `#![allow(dead_code)]` because each binary uses a different subset.
+The split follows where things can fail: `tests/test_index.rs` drives `build_index`/`AppState::build` and owns every download and parse fault (mockito, the size caps, retired plans); `tests/test_cache.rs` drives the same function with an enabled cache and owns the four decisions in the table above; `tests/test_api.rs` drives the router over a seeded or fixture-built index and owns what a client can still observe (hit, miss, bad parameter). Helpers more than one binary needs — the fixture bytes, `plan`, `mock_fixture`, `temp_dir`, `state_from_fixture`, `body_to_json`, `get`, `EventRecorder` — live in `tests/common/mod.rs`, which carries a blanket `#![allow(dead_code)]` because each binary uses a different subset.
+
+Every `build_index` call in `test_index.rs` passes `&PdfCache::disabled()`, which is what keeps those tests about downloads and nothing else. `test_cache.rs` gives each test its own `temp_dir(…)` (pid + nanos, like `write_temp` in `test_config.rs` — there is no `tempfile` dependency) and cleans it up at the end rather than in a `Drop` guard, so a failing assertion leaves the directory behind to look at.
 
 Integration tests use `tower::ServiceExt::oneshot` (not `axum-test`) to avoid version conflicts. Network tests use `mockito`; `test_the_source_is_read_once_and_never_again` uses `.expect(1)` + `assert_async()` to pin the property this design exists for — five requests, four of them misses, one fetch. District names with special chars are URL-encoded with `urlencoding::encode`. The middleware tests inject `ConnectInfo<SocketAddr>` via `Request::builder().extension(...)` to exercise the X-Forwarded-For trusted-proxy path.
 
@@ -99,8 +136,9 @@ Tests that assert on log output (`EventRecorder` in `tests/common`, `TraceRecord
 
 ## Known costs, deliberately not fixed
 
-- **The index is only as fresh as the process.** A changed `plans.yaml`, or a corrected PDF under an unchanged URL, is picked up on restart and not before. This is the trade that removed the per-request download, the two caches, and every request-time failure mode with them.
-- **An upstream outage during boot is a restart loop.** The process refuses to start rather than serve an incomplete index, so a container will keep restarting until the source is reachable. Visible in the restart count and the ERROR line; preferred over a silently half-populated index, which nothing would surface at all.
+- **The index is only as fresh as the process, and now also as fresh as the cache.** A changed `plans.yaml` is picked up on restart and not before; a corrected PDF under an *unchanged* URL additionally waits out `PDF_CACHE_TTL` (a month by default), because a fresh cache entry is used without asking the source. Restarting with `PDF_CACHE_TTL=0s` — or deleting the cache directory — forces the refetch.
+- **A start can now succeed on data nobody re-checked.** With the source down and an expired copy on disk, the process starts and serves last known dates instead of refusing. The only signal is the `serving a stale cached copy` WARN — there is no unhealthy status and no restart count to notice. Chosen over the alternative it replaces: a boot-time outage used to be a restart loop that could last as long as the outage, over data that changes once a year.
+- **Nothing ever prunes the cache directory.** A retired plan's file stays until someone deletes it. One file per plan URL ever configured, capped at `MAX_PDF_BYTES` each — bounded by how often `plans.yaml` changes, which is once a year.
 - **The whole index lives in memory, unbounded by anything but `MAX_PDF_BYTES` per plan at build time.** Fine for ~50 districts across one or two plans; it is not a design that scales to hundreds of plans.
 
 ## Docker

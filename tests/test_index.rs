@@ -9,31 +9,15 @@
 use axum::http::StatusCode;
 
 use blaue_tonne_rust::AppState;
-use blaue_tonne_rust::config::Plan;
+use blaue_tonne_rust::cache::PdfCache;
 use blaue_tonne_rust::errors::AppError;
 use blaue_tonne_rust::index::build_index;
 use blaue_tonne_rust::pdf_parser::index_districts;
 
 mod common;
-use common::{EventRecorder, FIXTURE_PAGES, body_to_json, fixture_pdf_bytes, get};
-
-fn plan(url: String, pages: &str) -> Plan {
-    Plan {
-        url,
-        pages: pages.to_string(),
-    }
-}
-
-/// Registers a mock serving the fixture PDF at `path`.
-async fn mock_fixture(server: &mut mockito::ServerGuard, path: &str) -> mockito::Mock {
-    server
-        .mock("GET", path)
-        .with_status(200)
-        .with_header("content-type", "application/pdf")
-        .with_body(fixture_pdf_bytes())
-        .create_async()
-        .await
-}
+use common::{
+    EventRecorder, FIXTURE_PAGES, body_to_json, fixture_pdf_bytes, get, mock_fixture, plan,
+};
 
 // ---------------------------------------------------------------------------
 // The happy path: one plan, every district in it
@@ -44,10 +28,13 @@ async fn test_index_is_built_from_the_fetched_plan() {
     let mut server = mockito::Server::new_async().await;
     let _mock = mock_fixture(&mut server, "/schedule.pdf").await;
 
-    let index = build_index(&[plan(
-        format!("{}/schedule.pdf", server.url()),
-        FIXTURE_PAGES,
-    )])
+    let index = build_index(
+        &[plan(
+            format!("{}/schedule.pdf", server.url()),
+            FIXTURE_PAGES,
+        )],
+        &PdfCache::disabled(),
+    )
     .await
     .expect("the fixture plan must index");
 
@@ -86,10 +73,13 @@ async fn test_the_source_is_read_once_and_never_again() {
         .create_async()
         .await;
 
-    let state = AppState::build(&[plan(
-        format!("{}/schedule.pdf", server.url()),
-        FIXTURE_PAGES,
-    )])
+    let state = AppState::build(
+        &[plan(
+            format!("{}/schedule.pdf", server.url()),
+            FIXTURE_PAGES,
+        )],
+        &PdfCache::disabled(),
+    )
     .await
     .expect("the fixture plan must index");
 
@@ -123,7 +113,11 @@ async fn test_upstream_server_error_refuses_to_start() {
         .create_async()
         .await;
 
-    let result = build_index(&[plan(format!("{}/broken.pdf", server.url()), "1")]).await;
+    let result = build_index(
+        &[plan(format!("{}/broken.pdf", server.url()), "1")],
+        &PdfCache::disabled(),
+    )
+    .await;
     assert!(
         matches!(result, Err(AppError::Upstream(ref d)) if d.contains("500")),
         "expected an upstream fault, got: {result:?}"
@@ -141,7 +135,11 @@ async fn test_wrong_content_type_refuses_to_start() {
         .create_async()
         .await;
 
-    let result = build_index(&[plan(format!("{}/fake.pdf", server.url()), "1")]).await;
+    let result = build_index(
+        &[plan(format!("{}/fake.pdf", server.url()), "1")],
+        &PdfCache::disabled(),
+    )
+    .await;
     assert!(
         matches!(result, Err(AppError::Upstream(ref d)) if d.contains("text/html")),
         "expected the content-type guard to reject, got: {result:?}"
@@ -151,7 +149,11 @@ async fn test_wrong_content_type_refuses_to_start() {
 #[tokio::test]
 async fn test_url_without_a_pdf_path_refuses_to_start() {
     // No network involved: `download_pdf` rejects the URL on its path alone.
-    let result = build_index(&[plan("http://example.test/not-a-pdf-file".to_string(), "1")]).await;
+    let result = build_index(
+        &[plan("http://example.test/not-a-pdf-file".to_string(), "1")],
+        &PdfCache::disabled(),
+    )
+    .await;
     assert!(
         matches!(result, Err(AppError::Upstream(ref d)) if d.contains(".pdf")),
         "expected the .pdf path guard to reject, got: {result:?}"
@@ -162,10 +164,13 @@ async fn test_url_without_a_pdf_path_refuses_to_start() {
 async fn test_unreachable_host_refuses_to_start() {
     // ".invalid" never resolves (RFC 2606) → an immediate send error rather than
     // a 30 s timeout.
-    let result = build_index(&[plan(
-        "http://nonexistent.invalid/schedule.pdf".to_string(),
-        "1",
-    )])
+    let result = build_index(
+        &[plan(
+            "http://nonexistent.invalid/schedule.pdf".to_string(),
+            "1",
+        )],
+        &PdfCache::disabled(),
+    )
     .await;
     assert!(
         matches!(result, Err(AppError::Upstream(_))),
@@ -187,7 +192,11 @@ async fn test_corrupt_pdf_refuses_to_start() {
         .create_async()
         .await;
 
-    let result = build_index(&[plan(format!("{}/corrupt.pdf", server.url()), "1")]).await;
+    let result = build_index(
+        &[plan(format!("{}/corrupt.pdf", server.url()), "1")],
+        &PdfCache::disabled(),
+    )
+    .await;
     assert!(
         matches!(result, Err(AppError::PdfError(_))),
         "expected a parse fault, got: {result:?}"
@@ -221,7 +230,11 @@ async fn test_oversized_pdf_content_length_refuses_to_start() {
         .create_async()
         .await;
 
-    let result = build_index(&[plan(format!("{}/huge.pdf", server.url()), "1")]).await;
+    let result = build_index(
+        &[plan(format!("{}/huge.pdf", server.url()), "1")],
+        &PdfCache::disabled(),
+    )
+    .await;
     assert!(
         matches!(result, Err(AppError::Upstream(ref d)) if d.contains("advertises")),
         "expected the content-length pre-check to reject, got: {result:?}"
@@ -249,7 +262,11 @@ async fn test_oversized_chunked_pdf_refuses_to_start() {
         .create_async()
         .await;
 
-    let result = build_index(&[plan(format!("{}/huge.pdf", server.url()), "1")]).await;
+    let result = build_index(
+        &[plan(format!("{}/huge.pdf", server.url()), "1")],
+        &PdfCache::disabled(),
+    )
+    .await;
     assert!(
         matches!(result, Err(AppError::Upstream(ref d)) if d.contains("exceeds the")),
         "expected the in-loop cap to reject, got: {result:?}"
@@ -274,10 +291,13 @@ async fn test_retired_plan_is_skipped_with_a_warning() {
     let _current = mock_fixture(&mut server, "/this-year.pdf").await;
 
     let (recorder, _guard) = EventRecorder::install();
-    let index = build_index(&[
-        plan(format!("{}/last-year.pdf", server.url()), FIXTURE_PAGES),
-        plan(format!("{}/this-year.pdf", server.url()), FIXTURE_PAGES),
-    ])
+    let index = build_index(
+        &[
+            plan(format!("{}/last-year.pdf", server.url()), FIXTURE_PAGES),
+            plan(format!("{}/this-year.pdf", server.url()), FIXTURE_PAGES),
+        ],
+        &PdfCache::disabled(),
+    )
     .await
     .expect("a retired plan must not keep the service from starting");
 
@@ -310,7 +330,11 @@ async fn test_only_plan_retired_refuses_to_start() {
         .create_async()
         .await;
 
-    let result = build_index(&[plan(format!("{}/last-year.pdf", server.url()), "1")]).await;
+    let result = build_index(
+        &[plan(format!("{}/last-year.pdf", server.url()), "1")],
+        &PdfCache::disabled(),
+    )
+    .await;
     assert!(
         matches!(result, Err(AppError::Upstream(ref d)) if d.contains("none of the 1")),
         "a retired-only config must not start, got: {result:?}"
@@ -319,7 +343,7 @@ async fn test_only_plan_retired_refuses_to_start() {
 
 #[tokio::test]
 async fn test_no_plans_refuses_to_start() {
-    let result = build_index(&[]).await;
+    let result = build_index(&[], &PdfCache::disabled()).await;
     assert!(
         matches!(result, Err(AppError::Upstream(ref d)) if d.contains("none of the 0")),
         "an empty plans.yaml must not start, got: {result:?}"
@@ -349,9 +373,12 @@ async fn test_district_only_in_a_later_plan_is_indexed() {
         .await;
 
     let url = format!("{}/schedule.pdf", server.url());
-    let index = build_index(&[plan(url.clone(), "1"), plan(url, FIXTURE_PAGES)])
-        .await
-        .expect("both plans must index");
+    let index = build_index(
+        &[plan(url.clone(), "1"), plan(url, FIXTURE_PAGES)],
+        &PdfCache::disabled(),
+    )
+    .await
+    .expect("both plans must index");
 
     assert!(index.lookup("Vogtareuth").is_some_and(|d| !d.is_empty()));
 }
@@ -366,10 +393,13 @@ async fn test_plan_url_with_query_string_is_fetched() {
     let mut server = mockito::Server::new_async().await;
     let _mock = mock_fixture(&mut server, "/schedule.pdf?v=2").await;
 
-    let state = AppState::build(&[plan(
-        format!("{}/schedule.pdf?v=2", server.url()),
-        FIXTURE_PAGES,
-    )])
+    let state = AppState::build(
+        &[plan(
+            format!("{}/schedule.pdf?v=2", server.url()),
+            FIXTURE_PAGES,
+        )],
+        &PdfCache::disabled(),
+    )
     .await
     .expect("a query string must not disqualify a plan URL");
 

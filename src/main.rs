@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use blaue_tonne_rust::AppState;
 use blaue_tonne_rust::build_router;
+use blaue_tonne_rust::cache::PdfCache;
 use blaue_tonne_rust::config::{load_plans, parse_forwarded_allow_ips};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -68,13 +69,17 @@ async fn main() {
     let plans = load_plans(&plans_path).expect("failed to load plans.yaml");
     info!("Loaded {} plan(s)", plans.len());
 
+    // Logs what it resolved to (or that it is off) itself — a cache that
+    // silently did nothing would be indistinguishable from one that works.
+    let cache = PdfCache::from_env();
+
     // Every plan is read here, once — the service does no network I/O after
     // this point. A plan we cannot read is fatal: there is no second attempt at
     // request time, so starting anyway would mean serving a district short of
     // its dates for the lifetime of the process, silently. Logged rather than
     // `expect`ed so the internal detail (URL, library text) goes through
     // tracing like every other one.
-    let state = match AppState::build(&plans).await {
+    let state = match AppState::build(&plans, &cache).await {
         Ok(state) => state,
         Err(e) => {
             error!(error = %e, "failed to build the district index, refusing to start");

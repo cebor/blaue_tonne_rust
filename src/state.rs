@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::cache::PdfCache;
 use crate::config::Plan;
 use crate::errors::AppError;
 use crate::index::{DistrictIndex, build_index};
@@ -16,8 +17,8 @@ pub struct AppState {
 impl AppState {
     /// Read every configured plan and build the index. See [`build_index`] for
     /// what makes this fail — it is meant to be fatal at startup.
-    pub async fn build(plans: &[Plan]) -> Result<Self, AppError> {
-        Ok(Self::from_index(build_index(plans).await?))
+    pub async fn build(plans: &[Plan], cache: &PdfCache) -> Result<Self, AppError> {
+        Ok(Self::from_index(build_index(plans, cache).await?))
     }
 
     pub fn from_index(index: DistrictIndex) -> Self {

@@ -126,7 +126,11 @@ deploy:
     - ssh "$SSH_USER"@"$SSH_SERVER" "docker pull $IMAGE_LATEST"
     - ssh "$SSH_USER"@"$SSH_SERVER" "docker stop blaue_tonne_api || true"
     - ssh "$SSH_USER"@"$SSH_SERVER" "docker rm blaue_tonne_api || true"
-    - ssh "$SSH_USER"@"$SSH_SERVER" "docker run --name blaue_tonne_api -d --restart always -e FORWARDED_ALLOW_IPS='172.17.0.1' -p 127.0.0.1:8245:8080 $IMAGE_LATEST"
+    # The named volume carries the plan-PDF cache across deploys. Without it the
+    # cache would live in the writable layer that `docker rm` above throws away,
+    # so every deploy would re-download every plan — and a deploy during an
+    # upstream outage would fail to start at all.
+    - ssh "$SSH_USER"@"$SSH_SERVER" "docker run --name blaue_tonne_api -d --restart always -e FORWARDED_ALLOW_IPS='172.17.0.1' -v blaue_tonne_cache:/cache -p 127.0.0.1:8245:8080 $IMAGE_LATEST"
   environment:
     name: production
     on_stop: undeploy

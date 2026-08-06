@@ -23,11 +23,29 @@ COPY src ./src
 COPY plans.yaml ./plans.yaml
 RUN cargo build --release
 
+# ─── Stage 3b: cachedir ───────────────────────────────────────────────────────
+# Sole purpose: be a source for the COPY below. The runtime image is distroless,
+# so there is no shell for a `RUN mkdir` there, and the process (uid 65532)
+# cannot create /cache itself either — / is root-owned. A directory therefore has
+# to be COPYd in with the right owner, and COPY needs somewhere to copy from.
+FROM chef AS cachedir
+RUN mkdir -p /cache
+
 # ─── Stage 4: runtime (distroless, non-root) ──────────────────────────────────
 FROM gcr.io/distroless/cc-debian13:nonroot
 WORKDIR /app
 COPY --from=builder /app/target/release/blaue_tonne_rust /usr/local/bin/blaue_tonne_rust
 COPY --from=builder /app/plans.yaml /app/plans.yaml
+
+# Downloaded plan PDFs. Owned by uid 65532 so the process can write it — and so
+# that a fresh *named* volume mounted here inherits that ownership from the
+# image (Docker copies content and ownership into an empty named volume on first
+# use). A bind mount does not: the host directory's own ownership wins, so it
+# has to be chowned to 65532:65532 by hand. Without a volume the cache still
+# survives a container restart, which is what breaks the boot-time restart loop.
+# No VOLUME instruction: that would create an unnamed volume on every `docker
+# run` without -v, and nothing ever cleans those up.
+COPY --from=cachedir --chown=65532:65532 /cache /cache
 
 EXPOSE 8080
 
@@ -35,7 +53,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["/usr/local/bin/blaue_tonne_rust", "healthcheck"]
 
 ENV PLANS_PATH=/app/plans.yaml \
-    BIND_ADDR=0.0.0.0:8080
+    BIND_ADDR=0.0.0.0:8080 \
+    PDF_CACHE_DIR=/cache \
+    PDF_CACHE_TTL=30d
 
 # distroless :nonroot already runs as uid 65532; no USER/groupadd needed.
 # No tini: the binary runs as PID 1 and handles SIGINT/SIGTERM itself via
