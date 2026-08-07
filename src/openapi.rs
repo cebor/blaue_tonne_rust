@@ -2,7 +2,7 @@
 
 use utoipa::OpenApi;
 
-use crate::handlers;
+use crate::{errors, handlers};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -13,7 +13,7 @@ use crate::handlers;
     components(
         schemas(
             handlers::HealthResponse,
-            handlers::ErrorDetail,
+            errors::ErrorDetail,
             handlers::DistrictQuery,
         )
     ),

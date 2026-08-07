@@ -13,11 +13,18 @@ const Y_TOLERANCE: f32 = 5.0;
 // Span helpers
 // ---------------------------------------------------------------------------
 
-/// Group spans into rows by proximity in Y, sorted top-to-bottom then left-to-right.
-/// PDF Y coordinates increase upward, so we sort by Y descending.
-fn spans_to_rows(spans: &[TextSpan]) -> Vec<Vec<String>> {
-    let mut sorted: Vec<&TextSpan> = spans.iter().collect();
-    sorted.sort_by(|a, b| {
+/// Reconstruct the table rows of one page: spans grouped by proximity in Y,
+/// sorted top-to-bottom then left-to-right. PDF Y coordinates increase upward,
+/// so we sort by Y descending.
+///
+/// The spans are consumed rather than borrowed, so each cell's text is moved
+/// into its row instead of copied.
+fn page_rows(doc: &PdfDocument, page_idx: usize) -> Result<Vec<Vec<String>>, PlanError> {
+    let mut spans: Vec<TextSpan> = doc
+        .extract_spans(page_idx)
+        .map_err(|e| PlanError::failed(e.to_string()))?;
+
+    spans.sort_by(|a, b| {
         b.bbox
             .y
             .total_cmp(&a.bbox.y)
@@ -25,16 +32,16 @@ fn spans_to_rows(spans: &[TextSpan]) -> Vec<Vec<String>> {
     });
 
     let mut rows: Vec<(f32, Vec<String>)> = Vec::new();
-    for span in sorted {
+    for span in spans {
         if let Some(last) = rows.last_mut()
             && (span.bbox.y - last.0).abs() <= Y_TOLERANCE
         {
-            last.1.push(span.text.clone());
+            last.1.push(span.text);
             continue;
         }
-        rows.push((span.bbox.y, vec![span.text.clone()]));
+        rows.push((span.bbox.y, vec![span.text]));
     }
-    rows.into_iter().map(|(_, texts)| texts).collect()
+    Ok(rows.into_iter().map(|(_, texts)| texts).collect())
 }
 
 /// Parse comma-separated 1-based page numbers (e.g. `"1,2"`) into 0-based
@@ -45,14 +52,6 @@ fn parse_page_numbers(pages: &str) -> Vec<usize> {
         .filter_map(|s| s.trim().parse::<usize>().ok())
         .filter_map(|n| n.checked_sub(1))
         .collect()
-}
-
-/// Extract the reconstructed table rows of one page.
-fn extract_rows(doc: &PdfDocument, page_idx: usize) -> Result<Vec<Vec<String>>, PlanError> {
-    let spans = doc
-        .extract_spans(page_idx)
-        .map_err(|e| PlanError::failed(e.to_string()))?;
-    Ok(spans_to_rows(&spans))
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +114,7 @@ pub fn index_districts(
     let mut index: HashMap<String, Vec<NaiveDate>> = HashMap::new();
 
     for page_idx in parse_page_numbers(pages) {
-        let rows = extract_rows(&doc, page_idx)?;
+        let rows = page_rows(&doc, page_idx)?;
 
         for (row_idx, row) in rows.iter().enumerate() {
             // A row that carries dates itself is a date row, not a name row.

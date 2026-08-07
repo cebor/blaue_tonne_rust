@@ -12,12 +12,27 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use serde_json::json;
+use serde::Serialize;
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
 // What a request can be answered with
 // ---------------------------------------------------------------------------
+
+// Lives here rather than in `handlers.rs` because `AppError` is the only thing
+// that produces one, and because this *is* the body `into_response` serializes —
+// the schema `/docs` advertises and the bytes a client receives cannot drift
+// apart. `detail` always carries `client_message`, never the internal `Display`
+// text.
+//
+// The doc comment below is served at `/docs`, so it says what the body is and
+// nothing about how it is produced.
+
+/// Error response body returned on 4xx/5xx
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ErrorDetail {
+    pub detail: String,
+}
 
 /// Everything a request can be answered with other than success.
 ///
@@ -80,7 +95,10 @@ impl IntoResponse for AppError {
             // caller noise, not an operator signal.
             tracing::debug!(status = status.as_u16(), error = %self, "request rejected");
         }
-        (status, Json(json!({ "detail": self.client_message() }))).into_response()
+        let body = ErrorDetail {
+            detail: self.client_message().to_string(),
+        };
+        (status, Json(body)).into_response()
     }
 }
 

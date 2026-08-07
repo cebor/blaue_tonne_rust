@@ -11,7 +11,6 @@ bytes = "1"
 pdf_oxide = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 serde_yaml_ng = "0.10"
 thiserror = "2"
 ipnet = "2"
@@ -23,6 +22,9 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 sha2 = "0.11"
 
 [dev-dependencies]
+# Only the tests deserialize a response body; the service itself serializes
+# through typed structs (`ErrorDetail`, `HealthResponse`) and needs no `json!`.
+serde_json = "1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 mockito = "1"

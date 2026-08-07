@@ -20,27 +20,6 @@ use crate::pdf_parser::{index_districts, normalize_district};
 /// Whole-exchange timeout for fetching one plan PDF at startup.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Where a plan's bytes came from, for the one INFO line per indexed plan.
-///
-/// `age_secs` next to it is 0 for `url` and the file's age otherwise, so the
-/// same two fields answer both "downloaded or cached?" and "how old is it?".
-#[derive(Clone, Copy)]
-enum PlanSource {
-    Url,
-    Cache,
-    StaleCache,
-}
-
-impl PlanSource {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Url => "url",
-            Self::Cache => "cache",
-            Self::StaleCache => "stale-cache",
-        }
-    }
-}
-
 /// All known districts and their collection dates. Immutable once built.
 #[derive(Debug, Default)]
 pub struct DistrictIndex {
@@ -106,7 +85,9 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
         // line per plan below. One callsite rather than one per branch: an
         // operator asking "was this downloaded or read off disk?" should be able
         // to filter on a field, not to know three different message strings.
-        let mut source = PlanSource::Url;
+        // `age` next to it is zero for `url` and the file's age otherwise, so the
+        // same two fields answer both "downloaded or cached?" and "how old is it?".
+        let mut source = "url";
         let mut age = Duration::ZERO;
 
         // 1. A fresh cached copy answers the whole plan without touching the
@@ -117,7 +98,7 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
         let mut parsed = match cache.get(&plan.url).filter(|c| c.fresh) {
             Some(cached) => match parse_plan(cached.bytes, &plan.pages).await {
                 Ok(parsed) => {
-                    source = PlanSource::Cache;
+                    source = "cache";
                     age = cached.age;
                     Some(parsed)
                 }
@@ -159,8 +140,9 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
                 //    fetched, and a plan changes once a year. Said loudly,
                 //    because nothing else will report it afterwards.
                 Err(e) => {
-                    let stale = cache.get(&plan.url);
-                    let Some(stale) = stale else { return Err(e) };
+                    let Some(stale) = cache.get(&plan.url) else {
+                        return Err(e);
+                    };
 
                     match parse_plan(stale.bytes, &plan.pages).await {
                         Ok(from_cache) => {
@@ -170,7 +152,7 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
                                 age_secs = stale.age.as_secs(),
                                 "plan could not be fetched, serving a stale cached copy"
                             );
-                            source = PlanSource::StaleCache;
+                            source = "stale-cache";
                             age = stale.age;
                             parsed = Some(from_cache);
                         }
@@ -200,7 +182,7 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
 
         tracing::info!(
             url = %plan.url,
-            source = source.as_str(),
+            source,
             age_secs = age.as_secs(),
             districts,
             "indexed plan"

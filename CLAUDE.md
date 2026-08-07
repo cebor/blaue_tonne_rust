@@ -116,6 +116,8 @@ That is the complete list because the route is: normalize, reject `""`, look up.
 
 **Why the split at all:** with the startup faults in `AppError`, `IntoResponse` carried status codes and client messages for four cases that could not occur, and `test_errors.rs` maintained the no-disclosure invariant over messages nobody serves. Both are now scoped to what is actually served.
 
+**The response body is the `ErrorDetail` struct**, which lives in `errors.rs` next to the only thing that produces one and is the same type `/docs` advertises. It used to be declared in `handlers.rs` for the OpenAPI annotation alone while `into_response` built the real body by hand as `json!({"detail": …})` — two shapes coupled by nothing but convention, either of which could be renamed without the other noticing. Serializing the struct is also what took `serde_json` out of `[dependencies]`; the tests still deserialize with it, so it is a dev-dependency now.
+
 `AppError`'s `Display` is still the internal detail (axum's rejection text) and is logged, never serialized; `into_response` logs at DEBUG for 4xx so caller noise stays off the default filter, and keeps the ERROR branch for a future 5xx variant so one could not be added and then vanish under the default filter. `PlanError`'s `Display` may name plan URLs and library text freely — nothing serializes it.
 
 **Nothing a client can observe may reveal that this service fetches and parses PDFs from a third party** — not the message, not the status code, not the `/docs` response descriptions. Since the split this is mostly true by construction: no `AppError` variant even has a plan URL to leak. `test_no_variant_discloses_the_data_source` stays anyway, because the invariant is about what may be *added* — a variant carrying upstream text is the first thing someone would write if request-time fetching ever came back. `assert_every_variant_is_covered` next to it is an exhaustive `match` that exists only to stop compiling when `AppError` grows.
@@ -143,7 +145,7 @@ Tests that assert on log output (`EventRecorder` in `tests/common`, `TraceRecord
 
 `pages` is passed directly to `index_districts`, which parses the comma-separated 1-based page numbers and uses them as 0-based indices for `pdf_oxide`. A page number past the end of the document is a `PlanError::Failed`, and therefore a refused startup — a wrong `pages` value cannot survive as a district quietly missing its dates.
 
-`url` is validated in `config::validate_plan_url` at load time — scheme must be `http`/`https`, and the URL **path** must end in `.pdf`. Matching on the path rather than the whole string is what lets a link carry a query string or fragment (`…/Abfuhrplan_2027.pdf?v=2`). `download.rs` keeps an equivalent path-based check as a guard for callers that build a URL some other way.
+`url` is validated in `config::validate_plan_url` at load time — scheme must be `http`/`https`, and the URL **path** must end in `.pdf`. Matching on the path rather than the whole string is what lets a link carry a query string or fragment (`…/Abfuhrplan_2027.pdf?v=2`). This is the **only** place the rule lives: `download.rs` used to repeat it as a guard, but every URL it can be handed has already been through `load_plans`, so the second copy asserted nothing and had its own hand-rolled path parsing to keep in step. `test_load_plans_rejects_non_pdf_url` in `test_config.rs` is what pins it.
 
 ## Known costs, deliberately not fixed
 

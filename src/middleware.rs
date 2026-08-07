@@ -80,7 +80,7 @@ pub fn make_request_span(req: &Request) -> Span {
 /// default `RUST_LOG` fallback (`blaue_tonne_rust=info`) filters out — request
 /// logging would silently disappear unless the operator also enabled
 /// `tower_http`.
-pub fn log_response(res: &Response, latency: Duration, _span: &Span) {
+pub(crate) fn log_response(res: &Response, latency: Duration, _span: &Span) {
     tracing::info!(
         status = res.status().as_u16(),
         latency_ms = latency.as_millis(),

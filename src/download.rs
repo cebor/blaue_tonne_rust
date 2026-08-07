@@ -1,4 +1,8 @@
-//! HTTP download of plan PDFs, with URL and content-type validation.
+//! HTTP download of plan PDFs, with content-type and size validation.
+//!
+//! The URL itself is not re-checked here: `config::validate_plan_url` rejects
+//! anything unfetchable while `plans.yaml` is being read, which is the only way
+//! a plan reaches this function.
 
 use axum::http::StatusCode;
 use bytes::{Bytes, BytesMut};
@@ -18,16 +22,6 @@ fn transport_error(url: &str, e: reqwest::Error) -> PlanError {
 }
 
 pub async fn download_pdf(client: &Client, url: &str) -> Result<Bytes, PlanError> {
-    // `config::validate_plan_url` already rejects this at startup; kept here as
-    // a guard for callers that build a URL some other way. Checked on the path
-    // only, so a query string or fragment does not disqualify a valid link.
-    let path = url.split(['?', '#']).next().unwrap_or(url);
-    if !path.to_lowercase().ends_with(".pdf") {
-        return Err(PlanError::failed(format!(
-            "configured plan URL does not point at a .pdf path: {url}"
-        )));
-    }
-
     let mut response = client
         .get(url)
         .send()

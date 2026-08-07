@@ -166,7 +166,7 @@ pub fn cache_dir_from(
 }
 
 /// [`cache_dir_from`] applied to the real environment.
-pub fn cache_dir_from_env() -> Option<PathBuf> {
+pub(crate) fn cache_dir_from_env() -> Option<PathBuf> {
     cache_dir_from(
         std::env::var("PDF_CACHE_DIR").ok().as_deref(),
         std::env::var("XDG_CACHE_HOME").ok().as_deref(),

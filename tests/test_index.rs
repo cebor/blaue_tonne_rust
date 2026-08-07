@@ -146,19 +146,9 @@ async fn test_wrong_content_type_refuses_to_start() {
     );
 }
 
-#[tokio::test]
-async fn test_url_without_a_pdf_path_refuses_to_start() {
-    // No network involved: `download_pdf` rejects the URL on its path alone.
-    let result = build_index(
-        &[plan("http://example.test/not-a-pdf-file".to_string(), "1")],
-        &PdfCache::disabled(),
-    )
-    .await;
-    assert!(
-        matches!(result, Err(PlanError::Failed(ref d)) if d.contains(".pdf")),
-        "expected the .pdf path guard to reject, got: {result:?}"
-    );
-}
+// A plan URL that does not point at a .pdf path is rejected while `plans.yaml`
+// is read, not while it is fetched — see `test_load_plans_rejects_non_pdf_url`
+// in `test_config.rs`, which is now the only place that rule lives.
 
 #[tokio::test]
 async fn test_unreachable_host_refuses_to_start() {

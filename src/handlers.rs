@@ -5,7 +5,7 @@ use axum::{
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::errors::AppError;
+use crate::errors::{AppError, ErrorDetail};
 use crate::pdf_parser::normalize_district;
 use crate::state::AppState;
 
@@ -13,12 +13,6 @@ use crate::state::AppState;
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct HealthResponse {
     pub status: String,
-}
-
-/// Error response body returned on 4xx/5xx
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct ErrorDetail {
-    pub detail: String,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
