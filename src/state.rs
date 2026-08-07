@@ -10,10 +10,9 @@ use crate::index::{DistrictIndex, build_index};
 ///
 /// It is one field because after [`build_index`] returns, the service does no
 /// I/O at all — the plans and the `reqwest::Client` that read them are gone by
-/// then, and serving a request is a map lookup. The wrapper stays rather than
-/// passing `Arc<DistrictIndex>` around directly so that handler and router
-/// signatures name the service's state instead of one thing that happens to be
-/// in it.
+/// then, and serving a request is a map lookup. It is a wrapper rather than a
+/// bare `Arc<DistrictIndex>` so that handler and router signatures name the
+/// service's state instead of one thing that happens to be in it.
 #[derive(Clone)]
 pub struct AppState {
     pub index: Arc<DistrictIndex>,

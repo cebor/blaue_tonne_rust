@@ -43,11 +43,11 @@ async fn test_the_internal_detail_never_reaches_the_client() {
 // *variant* is a different matter — `assert_every_variant_is_covered` below
 // turns that into a compile error rather than a silent gap.
 //
-// Since the startup faults moved to `PlanError` this is mostly true by
-// construction: no variant left even has a plan URL to leak. The test stays
-// because the invariant is about what may be *added*, not about what is here —
-// and a variant carrying upstream text is exactly what someone would add first
-// if request-time fetching ever came back.
+// Startup faults are `PlanError`s and never become a response, so this holds by
+// construction: no `AppError` variant even has a plan URL to leak. The test
+// earns its place anyway, because the invariant is about what may be *added*,
+// not about what is here — a variant carrying upstream text is exactly what
+// someone would reach for first if request-time fetching were introduced.
 // ---------------------------------------------------------------------------
 
 /// Makes the list below exhaustive by construction: adding a variant to

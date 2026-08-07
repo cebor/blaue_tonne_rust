@@ -1,10 +1,10 @@
 //! Building the index at startup.
 //!
-//! This is where every fault that used to reach a client now lands. The rule it
-//! all follows: the process either serves a complete index or refuses to start.
-//! There is no second attempt at request time any more, so a half-built index
-//! would quietly serve a district short of its dates for as long as the process
-//! runs — and nobody would see it.
+//! This is where every fault involving the plan source lands. The rule they all
+//! follow: the process either serves a complete index or refuses to start.
+//! There is no second attempt at request time, so a half-built index would
+//! quietly serve a district short of its dates for as long as the process runs
+//! — and nobody would see it.
 
 use axum::http::StatusCode;
 
@@ -53,12 +53,13 @@ async fn test_index_is_built_from_the_fetched_plan() {
 }
 
 // ---------------------------------------------------------------------------
-// The point of the whole exercise: the source is read once, and an unknown
+// The point of the whole design: the source is read once, and an unknown
 // district costs nothing afterwards.
 //
-// Before, a name in no plan re-downloaded and re-parsed every PDF on every
-// request — a loop of random names was arbitrarily expensive, and unbounded by
-// anything a caller could not control.
+// This is what keeps a caller from driving work at the source: with a fetch on
+// the request path, a loop of random names — none of them in any plan — would
+// re-download and re-parse every PDF, at a cost bounded by nothing the service
+// controls. Here it is five requests, four misses, and one fetch.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -147,8 +148,8 @@ async fn test_wrong_content_type_refuses_to_start() {
 }
 
 // A plan URL that does not point at a .pdf path is rejected while `plans.yaml`
-// is read, not while it is fetched — see `test_load_plans_rejects_non_pdf_url`
-// in `test_config.rs`, which is now the only place that rule lives.
+// is read, not while it is fetched, so it is not a fault this file covers —
+// `test_load_plans_rejects_non_pdf_url` in `test_config.rs` owns it.
 
 #[tokio::test]
 async fn test_unreachable_host_refuses_to_start() {
@@ -170,11 +171,11 @@ async fn test_unreachable_host_refuses_to_start() {
 
 #[tokio::test]
 async fn test_corrupt_pdf_refuses_to_start() {
-    // Downloads fine, but the bytes are not a PDF. `PlanError` no longer has a
-    // variant that separates "we could not fetch it" from "we could not read
-    // what we fetched" — every startup fault is handled identically — so the
-    // assertion is on the message, which is the only thing that still tells the
-    // two apart in a log.
+    // Downloads fine, but the bytes are not a PDF. `PlanError` has no variant
+    // separating "we could not fetch it" from "we could not read what we
+    // fetched" — every startup fault is handled identically — so the assertion
+    // is on the message, which is the only thing that tells the two apart in a
+    // log.
     let mut server = mockito::Server::new_async().await;
     let _mock = server
         .mock("GET", "/corrupt.pdf")

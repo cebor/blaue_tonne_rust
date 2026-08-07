@@ -19,11 +19,10 @@ use thiserror::Error;
 // What a request can be answered with
 // ---------------------------------------------------------------------------
 
-// Lives here rather than in `handlers.rs` because `AppError` is the only thing
-// that produces one, and because this *is* the body `into_response` serializes —
-// the schema `/docs` advertises and the bytes a client receives cannot drift
-// apart. `detail` always carries `client_message`, never the internal `Display`
-// text.
+// This is the body `into_response` serializes *and* the schema `/docs`
+// advertises, so the two cannot drift apart. It belongs next to `AppError`,
+// which is the only thing that produces one. `detail` always carries
+// `client_message`, never the internal `Display` text.
 //
 // The doc comment below is served at `/docs`, so it says what the body is and
 // nothing about how it is produced.
@@ -46,10 +45,12 @@ pub struct ErrorDetail {
 /// Clients receive `client_message` instead, which is private for that reason.
 ///
 /// Nothing a client can observe — neither the status code nor the message — may
-/// reveal that this service fetches and parses PDFs from a third party. With the
-/// source-side variants gone that is now mostly true by construction: there is
-/// no message left that *could* name a plan. `test_no_variant_discloses_the_data_source`
-/// still asserts it over every variant, so a message added later is covered.
+/// reveal that this service fetches and parses PDFs from a third party. No
+/// variant here carries a plan URL or library text, so this holds by
+/// construction. `test_no_variant_discloses_the_data_source` asserts it over
+/// every variant anyway: the invariant is about what may be *added*, and a
+/// variant carrying upstream text is the first thing someone would reach for if
+/// request-time fetching were introduced.
 #[derive(Debug, Error)]
 pub enum AppError {
     /// The request itself was malformed — a missing or undeserializable query
@@ -83,8 +84,8 @@ impl AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.status();
-        // Only 4xx can occur — the route has no 5xx path left. The branch stays
-        // so that adding a variant with a 5xx status cannot log it at DEBUG and
+        // Only 4xx can occur: the route has no 5xx path. The branch exists so
+        // that a variant added with a 5xx status cannot be logged at DEBUG and
         // vanish under the default filter.
         if status.is_server_error() {
             tracing::error!(status = status.as_u16(), error = %self, "request failed");
@@ -117,10 +118,11 @@ impl IntoResponse for AppError {
 ///
 /// Two variants, because the startup path asks exactly two questions: *is this
 /// plan retired?* — which `build_index` answers by skipping it — and *what do I
-/// print before giving up?* Every finer distinction the old `AppError` drew
-/// between upstream faults (unreachable, non-2xx, wrong content-type, timed
-/// out, oversized, unparseable) collapsed to the same handling anyway, and the
-/// detail that told them apart was always the message, never the variant.
+/// print before giving up?* A finer split between the upstream faults
+/// (unreachable, non-2xx, wrong content-type, timed out, oversized,
+/// unparseable) would buy nothing: they are all handled identically, and what
+/// tells them apart is the message, not the variant. That is also why their
+/// tests assert on substrings rather than matching a variant.
 ///
 /// The `Display` text is the **internal** detail — it carries plan URLs and raw
 /// library error strings, and is only ever logged. Nothing here is serialized,

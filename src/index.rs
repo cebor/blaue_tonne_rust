@@ -56,10 +56,10 @@ impl DistrictIndex {
 /// Download and parse every configured plan into one index.
 ///
 /// Fails on the first plan that cannot be read. There is no second chance at
-/// request time any more, so a half-built index would serve some districts
-/// short of their dates for the lifetime of the process — refusing to start is
-/// the honest outcome, and it is visible in the restart rather than silent in
-/// the data.
+/// request time, so a half-built index would serve some districts short of
+/// their dates for the lifetime of the process — refusing to start is the
+/// honest outcome, and it is visible in the restart rather than silent in the
+/// data.
 ///
 /// The one exception is a plan whose PDF is gone upstream (HTTP 404). That is
 /// expected at the turn of the year, when last year's plan goes offline while it
@@ -112,21 +112,21 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
 
         if parsed.is_none() {
             match download_pdf(&client, &plan.url).await {
-                // 2. Fresh bytes. A parse error here is our own problem and
-                //    stays fatal, exactly as before the cache existed. The parse
-                //    runs *before* the write, so bytes that will not parse never
-                //    reach the cache: otherwise the next start would find a
-                //    fresh entry it has to detect as bad and throw away, and a
-                //    later outage would fall back to a copy that cannot be read
-                //    either.
+                // 2. Fresh bytes. A parse error here is our own problem and is
+                //    fatal. The parse runs *before* the write, so bytes that
+                //    will not parse never reach the cache: otherwise the next
+                //    start would find a fresh entry it has to detect as bad and
+                //    throw away, and a later outage would fall back to a copy
+                //    that cannot be read either.
                 Ok(bytes) => {
                     parsed = Some(parse_plan(bytes.clone(), &plan.pages).await?);
                     cache.put(&plan.url, &bytes);
                 }
 
-                // 3. Gone upstream. Unchanged by the cache on purpose: 404 means
-                //    the plan is retired, and serving a copy of it would keep a
-                //    withdrawn plan alive for as long as the file survives.
+                // 3. Gone upstream. The cache is deliberately not consulted
+                //    here: 404 means the plan is retired, and serving a copy of
+                //    it would keep a withdrawn plan alive for as long as the
+                //    file survives.
                 Err(PlanError::Retired(_)) => {
                     tracing::warn!(
                         url = %plan.url,

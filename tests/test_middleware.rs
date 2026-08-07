@@ -235,8 +235,10 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TraceRecorder {
 async fn record_trace(uri: &str) -> TraceRecorder {
     use tracing_subscriber::layer::SubscriberExt;
 
-    // Explicit, not incidental: this used to work only because another test in
-    // this binary happened to call it first.
+    // Called here explicitly rather than relying on another test in this binary
+    // reaching it first: tests run in parallel, so that ordering is not a
+    // guarantee, and without a global subscriber the callsite's `Interest` is
+    // cached as "never" and the thread-local recorder never sees it.
     init_tracing();
 
     let recorder = TraceRecorder::default();
