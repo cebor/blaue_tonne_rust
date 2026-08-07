@@ -223,8 +223,13 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
 
 /// Parse one plan's bytes off the async runtime.
 ///
-/// Parsing is CPU-bound. Off the runtime it also turns a panic in the parser
-/// into a `JoinError` instead of tearing down the process.
+/// Not to keep the runtime free — this only ever runs inside `build_index`,
+/// before the listener binds, when there is nothing else to starve. It is for
+/// the panic: `pdf_oxide` is fed third-party bytes that may be malformed, and
+/// awaited directly a panic in it would unwind through `main` as a backtrace on
+/// stderr and exit 101. Off the runtime it becomes a `JoinError`, and from there
+/// a `PlanError` that `main` logs at ERROR and exits 1 on — the same shape as
+/// every other startup fault.
 async fn parse_plan(
     pdf_bytes: Bytes,
     pages: &str,
