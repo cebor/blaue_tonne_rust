@@ -11,11 +11,10 @@ fn fixture_pdf() -> Vec<u8> {
 
 const PLANS_PAGES: &str = "1,2";
 
-// ---------------------------------------------------------------------------
-// Happy-path: every known district must appear in the index with at least one
-// date. The macro generates one #[test] per district AND the DISTRICTS
-// constant, so the district list exists exactly once.
-// ---------------------------------------------------------------------------
+// --- Every known district appears in the index with at least one date ---
+//
+// The macro generates one #[test] per district and the DISTRICTS constant, so
+// the district list exists exactly once.
 
 macro_rules! district_tests {
     ($(($name:ident, $district:expr)),* $(,)?) => {
@@ -93,9 +92,7 @@ district_tests! {
     (test_district_vogtareuth, "Vogtareuth"),
 }
 
-// ---------------------------------------------------------------------------
-// Error paths
-// ---------------------------------------------------------------------------
+// --- Error paths ---
 
 #[test]
 fn test_unknown_district_is_absent_from_the_index() {
@@ -106,10 +103,8 @@ fn test_unknown_district_is_absent_from_the_index() {
 
 #[test]
 fn test_invalid_bytes_rejected() {
-    // index_districts doesn't validate the URL – that's done in download_pdf.
-    // But we can verify invalid bytes are handled gracefully.
     // `index_districts` can only ever produce `PlanError::Failed`, so matching
-    // the variant would assert nothing — the message is what carries the reason.
+    // the variant would assert nothing — the message carries the reason.
     let result = index_districts(b"not a pdf", "1");
     assert!(
         matches!(result, Err(PlanError::Failed(ref d)) if d.contains("cross-reference")),
@@ -119,8 +114,6 @@ fn test_invalid_bytes_rejected() {
 
 #[test]
 fn test_page_past_the_end_of_the_document_is_an_error() {
-    // A `pages` entry the document cannot satisfy is a config fault we would
-    // rather see at startup than silently index nothing for.
     let pdf = fixture_pdf();
     let result = index_districts(&pdf, "999");
     assert!(
@@ -131,13 +124,10 @@ fn test_page_past_the_end_of_the_document_is_an_error() {
 
 #[test]
 fn test_all_districts_count() {
-    // Quick sanity check that our constant list has the right size
     assert_eq!(DISTRICTS.len(), 50);
 }
 
-// ---------------------------------------------------------------------------
-// normalize_district — the rule the index is keyed on
-// ---------------------------------------------------------------------------
+// --- normalize_district, the rule the index is keyed on ---
 
 #[test]
 fn test_normalize_district_is_whitespace_insensitive() {
@@ -153,8 +143,8 @@ fn test_normalize_district_is_whitespace_insensitive() {
 
 #[test]
 fn test_normalize_district_is_idempotent() {
-    // `DistrictIndex::from_pairs` normalizes keys that `index_districts` already
-    // produced in normalized form — that has to be a no-op.
+    // `DistrictIndex::from_pairs` re-normalizes keys `index_districts` already
+    // produced in normalized form.
     for district in DISTRICTS {
         let once = normalize_district(district);
         assert_eq!(normalize_district(&once), once, "district {district:?}");
@@ -163,9 +153,8 @@ fn test_normalize_district_is_idempotent() {
 
 #[test]
 fn test_index_keys_are_already_normalized() {
-    // The handler looks up the normalized name, so every key the index produces
-    // has to survive normalization unchanged — otherwise a district present in
-    // the PDF would be unreachable over HTTP.
+    // The handler looks up the normalized name, so a key that changes under
+    // normalization would be unreachable over HTTP.
     let pdf = fixture_pdf();
     let index = index_districts(&pdf, PLANS_PAGES).expect("fixture must index");
     for key in index.keys() {

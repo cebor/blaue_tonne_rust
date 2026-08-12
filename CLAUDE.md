@@ -10,22 +10,22 @@ Tests require the fixture PDF at `tests/fixtures/lk_rosenheim_2026.pdf` (already
 
 ## Middleware & Request Pipeline
 
-`build_router` (`src/router.rs`) builds a **traced** sub-router and merges it into an untraced outer router. `Router::layer` only affects routes registered before it, so `/health` — registered on the outer router — carries neither middleware. Container health checks run every few seconds; keeping them off the layers is what stops them flooding the logs. The trade-off: `/health` is not traced **at all**, at any `RUST_LOG` level. `tests/test_middleware.rs` pins this with a span-counting subscriber.
+`build_router` (`src/router.rs`) builds a **traced** sub-router and merges it into an untraced outer router. `Router::layer` only affects routes registered before it, so `/health` — registered on the outer router — carries neither middleware and is not traced at any `RUST_LOG` level. This keeps container health checks out of the logs. `tests/test_middleware.rs` pins it with a span-counting subscriber.
 
-Within the traced sub-router, `ip_middleware` is added last (`.layer()`) so it is outermost — it runs **before** `TraceLayer`, ensuring the span already has `client_ip` populated. The middleware logic lives in `src/middleware.rs`.
+Within the traced sub-router, `ip_middleware` is added last (`.layer()`) so it is outermost and runs **before** `TraceLayer`, ensuring the span already has `client_ip`. The middleware logic lives in `src/middleware.rs`.
 
-1. **`ip_middleware`** — `middleware::resolve_client_ip`, wired up via `axum::middleware::from_fn_with_state` with the `FORWARDED_ALLOW_IPS` allowlist as state. If the connecting peer is in the allowlist, the leftmost `X-Forwarded-For` entry is used; otherwise the socket IP is used. Falls back to `127.0.0.1` in unit tests (no `ConnectInfo`). Inserts `ResolvedClientIp` extension.
-2. **`TraceLayer`** — uses `middleware::make_request_span` to create an `info_span!` per request (method, URI, client_ip) and `middleware::log_response` to log status + latency_ms at INFO.
+1. **`ip_middleware`** — `middleware::resolve_client_ip`, wired up via `axum::middleware::from_fn_with_state` with the `FORWARDED_ALLOW_IPS` allowlist as state. If the connecting peer is in the allowlist, the leftmost `X-Forwarded-For` entry is used; otherwise the socket IP. Falls back to `127.0.0.1` in unit tests (no `ConnectInfo`). Inserts the `ResolvedClientIp` extension.
+2. **`TraceLayer`** — `middleware::make_request_span` creates an `info_span!` per request (method, URI, client_ip); `middleware::log_response` logs status + latency_ms at INFO.
 
-`log_response` is deliberately **not** `DefaultOnResponse`: tower-http emits under the `tower_http::trace` target, which the default `RUST_LOG` fallback (`blaue_tonne_rust=info`) filters out — request logging would silently disappear in production. `test_response_is_logged_under_this_crates_target` pins this.
+`log_response` is **not** `DefaultOnResponse`: tower-http emits under the `tower_http::trace` target, which the default `RUST_LOG` fallback (`blaue_tonne_rust=info`) filters out. `test_response_is_logged_under_this_crates_target` pins this.
 
 ## Environment Variables
 
-**The full table lives in [README.md](README.md#environment-variables)** and is the one to edit when a variable changes. Kept here are only the three whose *behaviour* the rest of this file argues about:
+**The full table lives in [README.md](README.md#environment-variables)** and is the one to edit when a variable changes. Three whose behaviour matters elsewhere in this file:
 
-- **`PLANS_PATH`** is read exactly once, at startup. A new plan needs a restart — see below for why that is the accepted cost and not an oversight.
-- **`RUST_LOG`** takes full control when set; only when it is absent does the `blaue_tonne_rust=info` fallback apply. `/health` is never logged at any level, because it is registered outside the traced router rather than filtered out.
-- **`PDF_CACHE_DIR`** unset means the default path, set-but-empty means the cache is off. One variable for both, deliberately — see the cache section.
+- **`PLANS_PATH`** is read once, at startup. A new plan needs a restart.
+- **`RUST_LOG`** takes full control when set; the `blaue_tonne_rust=info` fallback applies only when it is absent. `/health` is never logged at any level, because it is registered outside the traced router.
+- **`PDF_CACHE_DIR`** unset means the default path; set-but-empty means the cache is off. One variable for both.
 
 ## PDF Parsing
 
@@ -33,46 +33,46 @@ District names in this PDF are rendered as character fragments (e.g. "Bad Aiblin
 
 Row reconstruction in `src/pdf_parser.rs` sorts `pdf_oxide` spans by Y descending (PDF Y increases upward), then X ascending, grouping them into a row while the Y delta stays within `Y_TOLERANCE`. No per-character X-gap splitting is needed — `pdf_oxide` already returns coherent spans.
 
-50 districts are supported (see `DISTRICTS` constant in `tests/test_pdf_parser.rs`).
+50 districts are supported (see `DISTRICTS` in `tests/test_pdf_parser.rs`).
 
-`index_districts` reads a whole plan in one pass and returns `district → dates`. It is the only entry point: there is deliberately no per-district search function, because two ways into the same row-matching rules are two places to keep in step. A row that carries dates itself is skipped as a key (it is a date row, not a name row), and a name row without dates around it is not an entry — the same rule a linear search would follow when it keeps scanning past a bare match. First occurrence wins, so pages are read in order.
+`index_districts` reads a whole plan in one pass and returns `district → dates`. It is the only entry point; there is no per-district search function. A row that carries dates itself is skipped as a key (it is a date row, not a name row), and a name row without dates around it is not an entry. First occurrence wins, so pages are read in order.
 
 ## The index is built at startup
 
-`build_index` (`src/index.rs`) downloads and parses every plan once, before `main` binds the listener. `AppState` holds nothing but the resulting `Arc<DistrictIndex>`; the `reqwest::Client` is local to the build, because after it returns the service does no network I/O at all. A request is `index.lookup(&normalize_district(name))` and nothing else.
+`build_index` (`src/index.rs`) downloads and parses every plan once, before `main` binds the listener. `AppState` holds nothing but the resulting `Arc<DistrictIndex>`; the `reqwest::Client` is local to the build, because after it returns the service does no network I/O. A request is `index.lookup(&normalize_district(name))` and nothing else.
 
-**A plan that can be read from neither the source nor the cache is fatal.** There is no second attempt at request time, so starting anyway would mean serving a district short of its dates for the lifetime of the process, silently — the failure would live in the data instead of in the status. `main` logs the fault at ERROR and exits 1, which a container restart makes visible.
+**A plan that can be read from neither the source nor the cache is fatal.** There is no second attempt at request time, so starting anyway would serve a district short of its dates for the lifetime of the process. `main` logs the fault at ERROR and exits 1.
 
-Loading `plans.yaml` fails the same way, through the same `match`-log-exit shape rather than an `expect`. Both are startup faults whose detail (a path, a URL, a serde message) belongs in tracing next to every other one — a panic would put it on stderr in a different format and add a backtrace nobody needs.
+Loading `plans.yaml` fails the same way, through the same `match`-log-exit shape rather than an `expect`, so the detail (a path, a URL, a serde message) goes through tracing like every other startup fault.
 
-**The one exception is an upstream 404**, which means the plan is *gone* — expected at the turn of the year, when last year's PDF goes offline while it is still listed in `plans.yaml`, and permanent until someone prunes the config. Treating that as fatal would keep the service down for weeks over a plan nobody needs. It is skipped with a WARN naming the URL — once, at startup, so there is no per-request log flooding to weigh against saying it loudly.
+**The one exception is an upstream 404**, which means the plan is gone — expected at the turn of the year, when last year's PDF goes offline while still listed in `plans.yaml`. It is skipped with a WARN naming the URL, once, at startup.
 
-**`plans_indexed == 0` is fatal too.** Every plan retired, or none configured, means nothing was read: an empty index would answer "District not found" for every name in the county, an assertion about data nobody looked at. Refusing to start is what makes a fully stale `plans.yaml` impossible to miss (`test_only_plan_retired_refuses_to_start`, `test_no_plans_refuses_to_start`). A plan served from the cache counts as indexed.
+**`plans_indexed == 0` is fatal too.** An empty index would answer "District not found" for every name in the county (`test_only_plan_retired_refuses_to_start`, `test_no_plans_refuses_to_start`). A plan served from the cache counts as indexed.
 
 ## The plan PDFs are cached on disk
 
-`src/cache.rs`. `build_index` takes a `&PdfCache` and consults it before every download, so a normal start does no network I/O at all — plans change once a year, and re-downloading identical bytes on every restart bought nothing.
+`src/cache.rs`. `build_index` takes a `&PdfCache` and consults it before every download, so a normal start does no network I/O at all.
 
-`PdfCache { dir: Option<PathBuf>, ttl: Duration }`. **`dir: None` is a disabled cache and is not a special case anywhere** — `get`/`put` are no-ops, and the three ways to get there (empty `PDF_CACHE_DIR`, a directory that could not be created, `PdfCache::disabled()` in tests) all converge on the same code. That is what keeps `build_index` free of "if caching is on" branches.
+`PdfCache { dir: Option<PathBuf>, ttl: Duration }`. **`dir: None` is a disabled cache and is not a special case anywhere** — `get`/`put` are no-ops, and the three ways to get there (empty `PDF_CACHE_DIR`, a directory that could not be created, `PdfCache::disabled()` in tests) converge on the same code. `build_index` therefore has no "if caching is on" branches.
 
-**Unset `PDF_CACHE_DIR` ≠ empty `PDF_CACHE_DIR`.** Unset picks the default location, empty switches the cache off. One variable therefore covers both the path and the off switch; a separate `PDF_CACHE_ENABLED` would allow "enabled, no path", a contradiction someone would have to define behaviour for. `config::cache_dir_from` holds the resolution logic as a pure function of the three env values so it is testable without mutating process-wide environment — only `PdfCache::from_env`'s two edge cases need `set_var`, and they share one serial `#[test]`.
+**Unset `PDF_CACHE_DIR` ≠ empty `PDF_CACHE_DIR`.** Unset picks the default location; empty switches the cache off. `config::cache_dir_from` holds the resolution logic as a pure function of the three env values, so it is testable without mutating process-wide environment — only `PdfCache::from_env`'s two edge cases need `set_var`, and they share one serial `#[test]`.
 
-**Key:** `{sha256(url)[..16 hex]}-{URL's own file name}`. The hash makes it unique and filesystem-safe for any URL (including one with `/` or `..` in it); the readable tail is what lets `ls` on the cache directory say which plan is which. Deliberately not `DefaultHasher`, whose output is explicitly unstable across Rust releases — the cache would silently empty itself on every toolchain upgrade. `put` writes to a sibling temp file (the key with its extension replaced by `tmp-{pid}`) and renames it into place, so a crash cannot leave a half-written PDF that a later start reads back as corrupt. It is also called **after** the parse succeeds, not before: bytes that will not parse are never written, so the next start does not find a fresh entry it has to throw away, and a later outage does not fall back to a copy that cannot be read either.
+**Key:** `{sha256(url)[..16 hex]}-{URL's own file name}`. The hash makes it unique and filesystem-safe for any URL (including one with `/` or `..` in it); the readable tail lets `ls` on the cache directory say which plan is which. Not `DefaultHasher`, whose output is not stable across Rust releases. `put` writes to a sibling temp file (the key with its extension replaced by `tmp-{pid}`) and renames it into place, so a crash cannot leave a half-written PDF. It is called **after** the parse succeeds, so bytes that will not parse are never written.
 
-`put` returns `()`, not `Result`: no caller could act on a failure differently than by carrying on with the bytes it already holds. Every fault in the module — unwritable directory, unreadable file, failed rename — degrades to "no cache" plus a log line. The cache is an optimization, never a data path, and nothing in it can make the service fail.
+`put` returns `()`, not `Result`. Every fault in the module — unwritable directory, unreadable file, failed rename — degrades to "no cache" plus a log line. The cache is an optimization, never a data path.
 
-The I/O is blocking `std::fs` on purpose. It happens only inside `build_index`, before the listener binds, when the runtime has nothing else to do — so there is no executor to starve and no need for tokio's `fs` feature.
+The I/O is blocking `std::fs`: it happens only inside `build_index`, before the listener binds, so there is no executor to starve and no need for tokio's `fs` feature.
 
-Four decisions in `build_index` that the code alone would not explain, each pinned by a test in `tests/test_cache.rs`:
+Four `build_index` decisions, each pinned by a test in `tests/test_cache.rs`:
 
 | Situation | Behaviour | Why |
 |---|---|---|
 | Fresh cache entry | Used, no request | The point of the feature |
 | Fresh entry that will not parse | WARN, refetch | Otherwise a corrupt file is a startup error **no restart can clear** |
-| Download fails, expired entry exists | WARN "serving a stale cached copy", start anyway | The dates were right when fetched and a plan changes once a year. This is what turns a boot-time outage from a restart loop into a degraded start |
-| Download 404s, entry exists | Entry ignored, plan skipped | 404 means *retired*. Serving the copy would keep a withdrawn plan alive for as long as the file survives |
+| Download fails, expired entry exists | WARN "serving a stale cached copy", start anyway | Turns a boot-time outage from a restart loop into a degraded start |
+| Download 404s, entry exists | Entry ignored, plan skipped | 404 means *retired*; the copy would keep a withdrawn plan alive |
 
-If the stale copy does not parse either, the **download** error is returned, not the parse error — the failed fetch is the cause, the unusable fallback only a consequence.
+If the stale copy does not parse either, the **download** error is returned, not the parse error.
 
 **One INFO line per indexed plan**, from a single callsite at the end of the loop body:
 
@@ -80,66 +80,66 @@ If the stale copy does not parse either, the **download** error is returned, not
 indexed plan url=… source="cache" age_secs=9 districts=52
 ```
 
-`source` is `url`, `cache`, or `stale-cache`; `age_secs` is 0 for `url` and the file's age otherwise. Deliberately a *field* rather than three different messages — the question "was this downloaded or read off disk?" should be answerable by filtering, not by knowing which wording each branch chose. `test_a_second_start_reads_the_plan_from_disk_and_makes_no_request` asserts on the two values, so the field is part of the interface rather than incidental log text. `stale-cache` comes *in addition to* the WARN, which stays: an operator scanning WARN must not have to reconstruct it from an INFO field.
+`source` is `url`, `cache`, or `stale-cache`; `age_secs` is 0 for `url` and the file's age otherwise. A *field* rather than three different messages, so "downloaded or read off disk?" is answerable by filtering. `test_a_second_start_reads_the_plan_from_disk_and_makes_no_request` asserts on the two values, so the field is part of the interface. `stale-cache` comes *in addition to* the WARN, which stays.
 
-Dates for a district that several plans carry are concatenated in plan order — not deduplicated, not sorted. That is what lets a district keep both the old and the new plan's dates while both are configured.
+Dates for a district that several plans carry are concatenated in plan order — not deduplicated, not sorted. That lets a district keep both the old and the new plan's dates while both are configured.
 
-**An empty or whitespace-only `district` is still rejected up front** (400). `normalize_district` strips whitespace, so both normalize to `""`, which is not a name; without the guard they would fall through to a plain index miss and answer 404, reporting a district the caller never named as missing.
+**An empty or whitespace-only `district` is rejected up front** (400). `normalize_district` strips whitespace, so both normalize to `""`; without the guard they would fall through to a plain index miss and answer 404.
 
-**Consequence: `plans.yaml` is read exactly once.** A new plan, or a corrected PDF under an unchanged URL, needs a restart. This is the accepted cost of the design, not an oversight.
+**Consequence: `plans.yaml` is read exactly once.** A new plan, or a corrected PDF under an unchanged URL, needs a restart.
 
 ## Download Size Cap
 
-`download.rs` caps plan PDFs at `MAX_PDF_BYTES` (16 MiB) with **two** guards: a `Content-Length` pre-check and an accumulating check inside the `chunk()` read loop. The second is not redundant — `Content-Length` can be absent (chunked transfer) or wrong. Both produce the same `PlanError::Failed` variant — as does every other startup fault — so their tests assert on the internal detail (`"advertises"` vs `"exceeds the"`); the variant alone would let either guard be deleted silently.
+`download.rs` caps plan PDFs at `MAX_PDF_BYTES` (16 MiB) with **two** guards: a `Content-Length` pre-check and an accumulating check inside the `chunk()` read loop. The second is not redundant — `Content-Length` can be absent (chunked transfer) or wrong. Both produce the same `PlanError::Failed` variant, so their tests assert on the message (`"advertises"` vs `"exceeds the"`); the variant alone would let either guard be deleted silently.
 
 ## Two error types, split by whether anyone can see them
 
-Both live in `src/errors.rs`, deliberately in one file: the split between them *is* the design, and it stays honest more easily when both are in view — a new variant belongs in `AppError` only if a client can actually receive it.
+Both live in `src/errors.rs`. A new variant belongs in `AppError` only if a client can actually receive it.
 
-**`AppError` is what a request can be answered with.** Two variants, both the caller's own doing:
+**`AppError` is what a request can be answered with:**
 
 | Variant | Status | Client sees | Meaning |
 |---------|--------|-------------|---------|
 | `BadRequest` | 400 | Invalid or missing query parameter | Missing/undeserializable `district`, or one that is empty after normalization |
-| `DistrictNotFound` | 404 | District not found | The district is in no plan — an observation, since every plan was read at startup |
+| `DistrictNotFound` | 404 | District not found | The district is in no plan |
 
-That is the complete list because the route is: normalize, reject `""`, look up. The `#[utoipa::path]` annotation lists 200/400/404 to match.
+That is the complete list, because the route is: normalize, reject `""`, look up. The `#[utoipa::path]` annotation lists 200/400/404 to match.
 
-**`PlanError` is what reading a plan can fail with**, and it never becomes a response — `build_index` runs before the listener binds, and `main` logs the fault and exits 1. Two variants, because the startup path asks exactly two questions:
+**`PlanError` is what reading a plan can fail with**, and it never becomes a response — `build_index` runs before the listener binds, and `main` logs the fault and exits 1.
 
 | Variant | Meaning |
 |---------|---------|
-| `Retired(url)` | Upstream 404: the plan is gone. The only variant that exists for **control flow** — `build_index` matches on it to skip the plan with a WARN |
+| `Retired(url)` | Upstream 404: the plan is gone. Exists for **control flow** — `build_index` matches on it to skip the plan with a WARN |
 | `Failed(detail)` | Everything else: unreachable, non-2xx, wrong content-type, timed out, over the size cap, unparseable bytes. All fatal, all handled identically |
 
-`Failed` is deliberately one variant and not five. Finer lines between the upstream faults (`Upstream`, `ServiceUnavailable`, `PdfError` and the like) would differ only in a status code and a client message that no client can reach, and nothing would match on them. What tells those faults apart is the **message**, which is why the tests assert on substrings (`"advertises"`, `"exceeds the"`, `"text/html"`, `"cross-reference"`) rather than on the variant — a variant match asserts nothing here.
+`Failed` is one variant and not five: what tells those faults apart is the **message**, which is why the tests assert on substrings (`"advertises"`, `"exceeds the"`, `"text/html"`, `"cross-reference"`) rather than on the variant.
 
-**Why the split at all:** keeping startup faults out of `AppError` is what lets `IntoResponse` carry status codes and client messages for exactly the cases that can occur, and lets `test_errors.rs` hold the no-disclosure invariant over messages that are actually served.
+Keeping startup faults out of `AppError` is what lets `IntoResponse` carry status codes and client messages for exactly the cases that can occur, and lets `test_errors.rs` hold the no-disclosure invariant over messages that are actually served.
 
-**The response body is the `ErrorDetail` struct** in `errors.rs`, next to the only thing that produces one. It is both what `into_response` serializes and what `/docs` advertises, so the served shape and the documented schema cannot drift apart — a schema struct that is declared for the annotation alone, with the body built beside it as `json!({"detail": …})`, would be two shapes coupled by nothing but convention. Serializing a struct is also why `serde_json` is a dev-dependency and not a runtime one: only the tests deserialize.
+**The response body is the `ErrorDetail` struct** in `errors.rs`, next to the only thing that produces one. It is both what `into_response` serializes and what `/docs` advertises, so the served shape and the documented schema cannot drift apart. Serializing a struct is also why `serde_json` is a dev-dependency and not a runtime one: only the tests deserialize.
 
-`AppError`'s `Display` is still the internal detail (axum's rejection text) and is logged, never serialized; `into_response` logs at DEBUG for 4xx so caller noise stays off the default filter, and keeps the ERROR branch for a future 5xx variant so one could not be added and then vanish under the default filter. `PlanError`'s `Display` may name plan URLs and library text freely — nothing serializes it.
+`AppError`'s `Display` is the internal detail (axum's rejection text) and is logged, never serialized. `into_response` logs at DEBUG for 4xx so caller noise stays off the default filter, and keeps the ERROR branch for a future 5xx variant. `PlanError`'s `Display` may name plan URLs and library text freely.
 
-**Nothing a client can observe may reveal that this service fetches and parses PDFs from a third party** — not the message, not the status code, not the `/docs` response descriptions. It holds by construction: no `AppError` variant even has a plan URL to leak. `test_no_variant_discloses_the_data_source` earns its place anyway, because the invariant is about what may be *added* — a variant carrying upstream text is the first thing someone would reach for if request-time fetching were introduced. `assert_every_variant_is_covered` next to it is an exhaustive `match` that exists only to stop compiling when `AppError` grows.
+**Nothing a client can observe may reveal that this service fetches and parses PDFs from a third party** — not the message, not the status code, not the `/docs` response descriptions. It holds by construction: no `AppError` variant has a plan URL to leak. `test_no_variant_discloses_the_data_source` covers what may be *added*; `assert_every_variant_is_covered` next to it is an exhaustive `match` that stops compiling when `AppError` grows.
 
-`lk_rosenheim_handler` takes `Result<Query<DistrictQuery>, QueryRejection>` rather than a bare `Query` so the 400 also becomes an `AppError` — axum's own rejection is a plain-text body, which would be the one response not matching the documented `ErrorDetail` schema.
+`lk_rosenheim_handler` takes `Result<Query<DistrictQuery>, QueryRejection>` rather than a bare `Query`, so the 400 also becomes an `AppError` — axum's own rejection is a plain-text body, which would be the one response not matching the documented `ErrorDetail` schema.
 
 ## Test Coverage
 
-Which test binary owns which failure mode, the coverage gaps that are deliberate, and the thread-local-subscriber rule the log-asserting tests depend on: [tests/CLAUDE.md](tests/CLAUDE.md), which loads when working under `tests/`.
+Which test binary owns which failure mode, the deliberate coverage gaps, and the thread-local-subscriber rule the log-asserting tests depend on: [tests/CLAUDE.md](tests/CLAUDE.md), which loads when working under `tests/`.
 
 ## `plans.yaml`
 
-`pages` is passed directly to `index_districts`, which parses the comma-separated 1-based page numbers and uses them as 0-based indices for `pdf_oxide`. A page number past the end of the document is a `PlanError::Failed`, and therefore a refused startup — a wrong `pages` value cannot survive as a district quietly missing its dates.
+`pages` is passed directly to `index_districts`, which parses the comma-separated 1-based page numbers and uses them as 0-based indices for `pdf_oxide`. A page number past the end of the document is a `PlanError::Failed`, and therefore a refused startup.
 
-`url` is validated in `config::validate_plan_url` at load time — scheme must be `http`/`https`, and the URL **path** must end in `.pdf`. Matching on the path rather than the whole string is what lets a link carry a query string or fragment (`…/Abfuhrplan_2027.pdf?v=2`). This is the **only** place the rule lives. `download.rs` does not repeat it: every URL it can be handed has already been through `load_plans`, so a second copy would assert nothing while adding its own path parsing to keep in step. `test_load_plans_rejects_non_pdf_url` in `test_config.rs` is what pins it.
+`url` is validated in `config::validate_plan_url` at load time — scheme must be `http`/`https`, and the URL **path** must end in `.pdf`. Matching on the path rather than the whole string lets a link carry a query string or fragment (`…/Abfuhrplan_2027.pdf?v=2`). This is the **only** place the rule lives; `download.rs` does not repeat it, because every URL it can be handed has already been through `load_plans`. `test_load_plans_rejects_non_pdf_url` in `test_config.rs` pins it.
 
 ## Known costs, deliberately not fixed
 
-- **The index is only as fresh as the process, and as fresh as the cache.** A changed `plans.yaml` is picked up on restart and not before; a corrected PDF under an *unchanged* URL additionally waits out `PDF_CACHE_TTL` (a month by default), because a fresh cache entry is used without asking the source. Restarting with `PDF_CACHE_TTL=0s` — or deleting the cache directory — forces the refetch.
-- **A start can succeed on data nobody re-checked.** With the source down and an expired copy on disk, the process starts and serves last known dates instead of refusing. The only signal is the `serving a stale cached copy` WARN — there is no unhealthy status and no restart count to notice. Accepted because the alternative is worse: refusing to start turns a boot-time outage into a restart loop lasting as long as the outage, over data that changes once a year.
-- **Nothing ever prunes the cache directory.** A retired plan's file stays until someone deletes it. One file per plan URL ever configured, capped at `MAX_PDF_BYTES` each — bounded by how often `plans.yaml` changes, which is once a year.
-- **The whole index lives in memory, unbounded by anything but `MAX_PDF_BYTES` per plan at build time.** Fine for ~50 districts across one or two plans; it is not a design that scales to hundreds of plans.
+- **The index is only as fresh as the process, and as fresh as the cache.** A changed `plans.yaml` is picked up on restart and not before; a corrected PDF under an *unchanged* URL additionally waits out `PDF_CACHE_TTL` (a month by default). Restarting with `PDF_CACHE_TTL=0s` — or deleting the cache directory — forces the refetch.
+- **A start can succeed on data nobody re-checked.** With the source down and an expired copy on disk, the process starts and serves last known dates. The only signal is the `serving a stale cached copy` WARN; there is no unhealthy status and no restart count.
+- **Nothing ever prunes the cache directory.** One file per plan URL ever configured, capped at `MAX_PDF_BYTES` each.
+- **The whole index lives in memory**, unbounded by anything but `MAX_PDF_BYTES` per plan at build time. Fine for ~50 districts across one or two plans; not a design that scales to hundreds of plans.
 
 ## Docker
 
@@ -148,6 +148,7 @@ See the `docker-build` skill (`.claude/skills/docker-build/SKILL.md`) for the im
 ## Key Conventions
 
 - **All code comments must be in English** — never write German comments, even when the conversation is in German.
+- **Comments describe what the code does not show.** Technical and short, no narrative, no rationale essays, no history of what changed. The current state of the code is the source of truth. Doc comments (`///`, `//!`) may be longer, but describe contract and behaviour, not justification.
 - **Edition 2024** — requires Rust ≥ 1.85.
 - No `unwrap()` in production paths; errors propagate via `AppError` (request path) or `PlanError` (startup path).
 - Date format from PDFs: `%d.%m.%y` (e.g. `06.01.26`). Returned as RFC 3339 UTC strings (`Utc.from_utc_datetime(&dt).to_rfc3339()`).

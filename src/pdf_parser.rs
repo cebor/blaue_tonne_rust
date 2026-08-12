@@ -9,16 +9,10 @@ use crate::errors::PlanError;
 const DATE_LENGTH: usize = 8;
 const Y_TOLERANCE: f32 = 5.0;
 
-// ---------------------------------------------------------------------------
-// Span helpers
-// ---------------------------------------------------------------------------
-
-/// Reconstruct the table rows of one page: spans grouped by proximity in Y,
-/// sorted top-to-bottom then left-to-right. PDF Y coordinates increase upward,
-/// so we sort by Y descending.
+/// Reconstruct the table rows of one page: spans grouped by proximity in Y
+/// (within [`Y_TOLERANCE`]), sorted top-to-bottom then left-to-right.
 ///
-/// The spans are consumed rather than borrowed, so each cell's text is moved
-/// into its row instead of copied.
+/// PDF Y coordinates increase upward, hence the descending Y sort.
 fn page_rows(doc: &PdfDocument, page_idx: usize) -> Result<Vec<Vec<String>>, PlanError> {
     let mut spans: Vec<TextSpan> = doc
         .extract_spans(page_idx)
@@ -54,16 +48,12 @@ fn parse_page_numbers(pages: &str) -> Vec<usize> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Date parsing
-// ---------------------------------------------------------------------------
-
 /// Parse a date from a cell string. The date is always the last 8 characters
 /// in "dd.mm.yy" format (e.g. "06.01.26" or "Mo. 06.01.26" → "06.01.26").
 fn parse_date(cell: &str) -> Option<NaiveDate> {
     let cell = cell.trim();
-    // Byte offset of the 8th-from-last character; None if fewer than 8 chars.
-    // Slicing by chars (not bytes) keeps multi-byte text like "Größe" safe.
+    // Byte offset of the 8th-from-last *character*; `None` if fewer than 8.
+    // Counting bytes would split multi-byte text like "Größe" mid-character.
     let start = cell.char_indices().rev().nth(DATE_LENGTH - 1)?.0;
     NaiveDate::parse_from_str(&cell[start..], "%d.%m.%y").ok()
 }
@@ -73,27 +63,15 @@ fn parse_dates_from_row(row: &[String]) -> Vec<NaiveDate> {
     row.iter().filter_map(|cell| parse_date(cell)).collect()
 }
 
-// ---------------------------------------------------------------------------
-// District names
-// ---------------------------------------------------------------------------
-
-/// Canonical form of a district name.
+/// Canonical form of a district name: whitespace stripped.
 ///
 /// District names in the PDF are stored as character fragments (e.g.
 /// "Bad Aibling" arrives as `["B", "ad", "A", "ib", "ling"]`), so all matching
-/// happens on the whitespace-stripped form. [`index_districts`] keys on this,
-/// and a caller looking a district up has to apply it first — otherwise
-/// "Bad Aibling", "BadAibling" and "B a d Aibling" would not resolve to the one
-/// row they all name.
-///
-/// Idempotent: applying it to an already-normalized name is a no-op.
+/// happens on this form. [`index_districts`] keys on it, and every lookup has to
+/// apply it first. Idempotent.
 pub fn normalize_district(district: &str) -> String {
     district.chars().filter(|c| !c.is_whitespace()).collect()
 }
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
 
 /// Read every district of a plan PDF in one pass.
 ///
@@ -101,9 +79,7 @@ pub fn normalize_district(district: &str) -> String {
 /// `pages`     – comma-separated 1-based page numbers, e.g. `"1,2"`.
 ///
 /// Returns a map from the normalized district name (see [`normalize_district`])
-/// to its collection dates. The whole document is opened once, so looking a
-/// district up afterwards costs nothing — which is the point: the caller builds
-/// this map at startup instead of re-parsing the PDF per request.
+/// to its collection dates. First occurrence wins, so pages are read in order.
 pub fn index_districts(
     pdf_bytes: &[u8],
     pages: &str,
@@ -118,16 +94,12 @@ pub fn index_districts(
 
         for (row_idx, row) in rows.iter().enumerate() {
             // A row that carries dates itself is a date row, not a name row.
-            // Skipping it keeps date strings out of the key space; no district
-            // name can look like one, so nothing reachable is lost.
             if !parse_dates_from_row(row).is_empty() {
                 continue;
             }
 
-            // District names in the PDF may be stored as character fragments
-            // ("Bad Aibling" arrives as ["B", "ad", "A", "ib", "ling"]), so the
-            // key is the whitespace-stripped concatenation of the whole row —
-            // exactly the form `normalize_district` produces.
+            // The key is the whole row concatenated and stripped — the form
+            // `normalize_district` produces.
             let name: String = row
                 .iter()
                 .flat_map(|s| s.chars().filter(|c| !c.is_whitespace()))
@@ -138,20 +110,18 @@ pub fn index_districts(
             }
 
             let mut dates: Vec<NaiveDate> = Vec::new();
-            // dates row BEFORE the name row (first half of the year)
+            // Row before the name row: first half of the year.
             if row_idx > 0
                 && let Some(prev_row) = rows.get(row_idx - 1)
             {
                 dates.extend(parse_dates_from_row(prev_row));
             }
-            // dates row AFTER the name row (second half of the year)
+            // Row after the name row: second half of the year.
             if let Some(next_row) = rows.get(row_idx + 1) {
                 dates.extend(parse_dates_from_row(next_row));
             }
 
-            // A name row without dates around it is not an entry — the same
-            // rule a per-district search follows when it keeps scanning past a
-            // match. First occurrence wins, so pages are read in order.
+            // A name row without dates around it is not an entry.
             if !dates.is_empty() {
                 index.entry(name).or_insert(dates);
             }
@@ -160,10 +130,6 @@ pub fn index_districts(
 
     Ok(index)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -177,7 +143,6 @@ mod tests {
 
     #[test]
     fn test_parse_date_with_prefix() {
-        // "Mo. 06.01.26" – last 8 chars are "06.01.26"
         let result = parse_date("Mo. 06.01.26");
         assert_eq!(result, Some(NaiveDate::from_ymd_opt(2026, 1, 6).unwrap()));
     }
@@ -194,8 +159,7 @@ mod tests {
 
     #[test]
     fn test_parse_date_multibyte_no_panic() {
-        // Multi-byte chars within the last 8 bytes must not panic
-        // (byte-based slicing would split "ö"/"ß" mid-character).
+        // Byte-based slicing would split "ö"/"ß" mid-character and panic.
         assert_eq!(parse_date("Größenwahn"), None);
         assert_eq!(parse_date("Söchtenau"), None);
     }

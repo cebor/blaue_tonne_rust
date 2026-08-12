@@ -1,18 +1,10 @@
 //! On-disk cache for the plan PDFs.
 //!
-//! Plans change once a year, so downloading them again on every process start is
-//! almost always a re-download of identical bytes. Caching them buys two things:
-//! a start that needs no network at all, and — through a deliberately kept
-//! *stale* copy — a start that still succeeds when the source is unreachable.
+//! Used only from [`crate::index::build_index`], before the listener binds —
+//! hence blocking `std::fs` rather than tokio's `fs` feature.
 //!
-//! Everything here happens inside [`crate::index::build_index`], before the
-//! listener binds. That is why the I/O is plain blocking `std::fs`: at that point
-//! the runtime has nothing else to do, so there is no executor to starve and no
-//! reason to pull in tokio's `fs` feature.
-//!
-//! The cache is an optimization, never a data path. Every failure in this module
-//! — unwritable directory, unreadable file, failed rename — degrades to "no
-//! cache" with a log line. None of it can make the service fail.
+//! Every failure here degrades to "no cache" plus a log line; nothing in this
+//! module can make the service fail.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -36,11 +28,8 @@ pub struct CachedPdf {
 
 /// A directory of downloaded plan PDFs, keyed by URL.
 ///
-/// `dir: None` is a fully disabled cache, and it is the *same* code path rather
-/// than a special case: `get` and `put` become no-ops. Three things produce it —
-/// an empty `PDF_CACHE_DIR`, a directory that cannot be created, and
-/// [`PdfCache::disabled`] in tests — and none of them needs its own branch
-/// anywhere else in the crate.
+/// `dir: None` is a disabled cache: `get` and `put` are no-ops, so callers need
+/// no branch of their own.
 pub struct PdfCache {
     dir: Option<PathBuf>,
     ttl: Duration,
@@ -50,11 +39,8 @@ impl PdfCache {
     /// Read `PDF_CACHE_DIR` and `PDF_CACHE_TTL` and prepare the directory.
     ///
     /// *Unset* `PDF_CACHE_DIR` means the default location; *set but empty* means
-    /// the cache is off. They are different on purpose — there is no second
-    /// `PDF_CACHE_ENABLED` variable that could contradict the path.
-    ///
-    /// A directory that cannot be created is a warning, not an error: a
-    /// read-only filesystem should cost the cache, not the service.
+    /// the cache is off. A directory that cannot be created warns and disables
+    /// the cache.
     pub fn from_env() -> Self {
         let ttl = parse_cache_ttl(&std::env::var("PDF_CACHE_TTL").unwrap_or_default());
 
@@ -98,10 +84,8 @@ impl PdfCache {
         Some(self.dir.as_ref()?.join(cache_file_name(url)))
     }
 
-    /// Read the cached copy of `url`, whether or not it is still fresh.
-    ///
-    /// A missing or unreadable file is a miss, not an error — the caller's next
-    /// move is a download either way.
+    /// Read the cached copy of `url`, whether or not it is still fresh. A
+    /// missing or unreadable file is a miss.
     pub fn get(&self, url: &str) -> Option<CachedPdf> {
         let path = self.path_for(url)?;
 
@@ -113,9 +97,8 @@ impl PdfCache {
             }
         };
 
-        // A clock that jumped backwards makes `duration_since` fail. Treating
-        // that as age zero keeps a usable file usable; the alternative would be
-        // re-downloading every plan after every clock correction.
+        // A clock that jumped backwards makes `duration_since` fail; age zero
+        // then keeps a usable file usable.
         let age = fs::metadata(&path)
             .and_then(|m| m.modified())
             .ok()
@@ -131,13 +114,8 @@ impl PdfCache {
 
     /// Store `bytes` as the cached copy of `url`.
     ///
-    /// Writes to a temporary file in the same directory and renames it into
-    /// place, so a crash or a full disk cannot leave a half-written PDF behind
-    /// that a later start would read back as corrupt.
-    ///
-    /// Returns `()` rather than `Result` deliberately: there is no caller that
-    /// could act on a failure differently than by carrying on with the bytes it
-    /// already has in memory.
+    /// Writes to a sibling temp file and renames it into place, so a crash
+    /// cannot leave a half-written PDF behind. Failures warn and return.
     pub fn put(&self, url: &str, bytes: &[u8]) {
         let Some(path) = self.path_for(url) else {
             return;
@@ -160,13 +138,11 @@ impl PdfCache {
     }
 }
 
-/// Filename for a plan URL: a hash prefix plus the URL's own file name.
+/// Filename for a plan URL: `{sha256(url)[..16 hex]}-{URL's own file name}`.
 ///
-/// The hash is what makes the name unique and filesystem-safe for any URL; the
-/// readable tail is what makes `ls` on the cache directory tell you which plan
-/// is which. A cryptographic hash rather than `DefaultHasher`, whose output is
-/// explicitly not stable across Rust releases — that would silently empty the
-/// cache on every toolchain upgrade.
+/// The hash makes the name unique and filesystem-safe for any URL; the readable
+/// tail says which plan a file holds. SHA-256 rather than `DefaultHasher`, whose
+/// output is not stable across Rust releases.
 fn cache_file_name(url: &str) -> String {
     let digest = Sha256::digest(url.as_bytes());
     let mut name = String::with_capacity(96);
@@ -210,8 +186,7 @@ mod tests {
 
     #[test]
     fn different_urls_get_different_names() {
-        // Same file name, different host: the hash prefix has to separate them,
-        // otherwise two plans would overwrite each other's cache entry.
+        // Same file name, different host: only the hash prefix separates them.
         let a = cache_file_name("https://a.example/plan.pdf");
         let b = cache_file_name("https://b.example/plan.pdf");
         assert_ne!(a, b);
@@ -222,7 +197,7 @@ mod tests {
     fn query_string_is_not_part_of_the_readable_tail() {
         let name = cache_file_name("https://example.org/plan.pdf?v=2");
         assert!(name.ends_with("-plan.pdf"), "{name}");
-        // …but it still keys separately, because the hash covers the whole URL.
+        // The hash covers the whole URL, so it still keys separately.
         assert_ne!(name, cache_file_name("https://example.org/plan.pdf"));
     }
 
@@ -239,7 +214,6 @@ mod tests {
         assert!(!cache.is_enabled());
         assert!(cache.path_for("https://example.org/plan.pdf").is_none());
 
-        // Must not panic and must not produce a file anywhere.
         cache.put("https://example.org/plan.pdf", b"%PDF-1.4");
         assert!(cache.get("https://example.org/plan.pdf").is_none());
     }

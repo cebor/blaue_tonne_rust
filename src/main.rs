@@ -15,7 +15,7 @@ fn bind_addr() -> String {
 }
 
 /// `blaue_tonne_rust healthcheck` performs a GET on /health and exits with
-/// code 0 (healthy) or 1. Used by the Docker HEALTHCHECK: the distroless
+/// code 0 (healthy) or 1. Used by the Docker HEALTHCHECK, because the distroless
 /// runtime image has neither a shell nor curl.
 async fn run_healthcheck() -> ! {
     let url = format!(
@@ -35,9 +35,8 @@ async fn main() {
         run_healthcheck().await;
     }
 
-    // `RUST_LOG` fully controls filtering when set; only when it is absent do
-    // we fall back to a sensible default. Note /health is never logged at any
-    // level — it is registered outside the traced router (see `build_router`).
+    // `RUST_LOG` takes full control when set; the fallback applies only when it
+    // is absent.
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -48,8 +47,8 @@ async fn main() {
     let plans_path =
         PathBuf::from(std::env::var("PLANS_PATH").unwrap_or_else(|_| "plans.yaml".to_string()));
 
-    // Comma-separated list of IPs/CIDRs whose X-Forwarded-For headers are trusted.
-    // Use "*" to trust all proxies. Default: empty (X-Forwarded-For not trusted).
+    // Comma-separated IPs/CIDRs whose X-Forwarded-For headers are trusted.
+    // Default: empty, i.e. X-Forwarded-For is not trusted.
     let forwarded_allow_ips =
         parse_forwarded_allow_ips(&std::env::var("FORWARDED_ALLOW_IPS").unwrap_or_default());
 
@@ -67,9 +66,8 @@ async fn main() {
     }
 
     // Unreadable file, invalid YAML, or a plan URL `download_pdf` could never
-    // fetch. Logged and exited rather than `expect`ed, like the index build
-    // below: both are startup faults, and both should reach an operator as a
-    // tracing ERROR rather than as a panic on stderr.
+    // fetch. Logged and exited rather than `expect`ed, so the detail reaches an
+    // operator through tracing like every other startup fault.
     let plans = match load_plans(&plans_path) {
         Ok(plans) => plans,
         Err(e) => {
@@ -79,16 +77,11 @@ async fn main() {
     };
     info!("Loaded {} plan(s)", plans.len());
 
-    // Logs what it resolved to (or that it is off) itself — a cache that
-    // silently did nothing would be indistinguishable from one that works.
+    // Logs the resolved directory, or that the cache is off.
     let cache = PdfCache::from_env();
 
-    // Every plan is read here, once — the service does no network I/O after
-    // this point. A plan we cannot read is fatal: there is no second attempt at
-    // request time, so starting anyway would mean serving a district short of
-    // its dates for the lifetime of the process, silently. Logged rather than
-    // `expect`ed so the internal detail (URL, library text) goes through
-    // tracing like every other one.
+    // Every plan is read here, once; the service does no network I/O after this
+    // point. A plan that cannot be read is fatal.
     let state = match AppState::build(&plans, &cache).await {
         Ok(state) => state,
         Err(e) => {
@@ -118,9 +111,10 @@ async fn main() {
 }
 
 /// Resolves on SIGINT (ctrl+c) or SIGTERM (`docker stop` / Kubernetes), letting
-/// `axum::serve` shut down gracefully. Installing these handlers explicitly is
-/// also what makes the process respond to signals when it runs as PID 1 in the
-/// container (no `tini`): an unhandled SIGINT/SIGTERM is ignored by PID 1.
+/// `axum::serve` shut down gracefully.
+///
+/// The handlers are installed explicitly because PID 1 — which this process is
+/// in the container — ignores signals it has no handler for.
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()

@@ -20,9 +20,7 @@ use blaue_tonne_rust::index::DistrictIndex;
 use blaue_tonne_rust::middleware::{make_request_span, resolve_client_ip};
 use blaue_tonne_rust::{AppState, build_router};
 
-// ---------------------------------------------------------------------------
-// resolve_client_ip — exercised via a mini-router that echoes the resolved IP
-// ---------------------------------------------------------------------------
+// --- resolve_client_ip, via a mini-router that echoes the resolved IP ---
 
 async fn echo_ip(Extension(ip): Extension<ResolvedClientIp>) -> String {
     ip.0.to_string()
@@ -73,7 +71,7 @@ async fn test_resolve_ip_trusted_proxy_uses_leftmost_xff() {
 #[tokio::test]
 async fn test_resolve_ip_untrusted_proxy_uses_peer() {
     let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
-    // allowlist does NOT contain the peer → XFF is ignored.
+    // The allowlist does not contain the peer → XFF is ignored.
     let response = router(vec![ip("192.168.0.1")])
         .oneshot(
             Request::builder()
@@ -122,19 +120,16 @@ async fn test_resolve_ip_trusted_via_cidr() {
     assert_eq!(body_to_string(response).await, "9.9.9.9");
 }
 
-// ---------------------------------------------------------------------------
-// make_request_span — records the resolved client IP on the span
-// ---------------------------------------------------------------------------
+// --- make_request_span ---
 
 static INIT: Once = Once::new();
 
 /// Installs a permissive global subscriber, once per test binary.
 ///
-/// Not optional for `record_trace`: `tracing` caches callsite `Interest`
-/// globally, and without a global subscriber it is computed against
-/// `NoSubscriber` and cached as "never" — the thread-local recorder would then
-/// be skipped before the dispatcher is consulted, non-deterministically,
-/// depending on which parallel test reached the callsite first.
+/// Required for `record_trace`: `tracing` caches each callsite's `Interest`
+/// globally. Without a global subscriber it is computed against `NoSubscriber`
+/// and cached as "never", and the thread-local recorder is then skipped before
+/// the dispatcher is consulted.
 fn init_tracing() {
     INIT.call_once(|| {
         tracing_subscriber::fmt()
@@ -155,12 +150,7 @@ fn test_make_request_span_is_info() {
     assert_eq!(span.metadata().unwrap().level(), &Level::INFO);
 }
 
-// ---------------------------------------------------------------------------
-// /health is registered outside the traced router, so it must not produce a
-// request span — this is what keeps high-frequency health checks out of the
-// logs, and it is the property that would silently regress if someone moved
-// the route back inside the layered block in build_router.
-// ---------------------------------------------------------------------------
+// --- /health is registered outside the traced router and produces no span ---
 
 /// One recorded event: the target it was emitted under and its message.
 #[derive(Clone, Debug, PartialEq)]
@@ -228,17 +218,13 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TraceRecorder {
 
 /// Drives one request with `recorder` installed as the thread-local subscriber.
 ///
-/// Relies on `#[tokio::test]`'s current-thread runtime: `set_default` is
-/// thread-local, so anything the request does on another thread (a
-/// `multi_thread` flavour, say) would not be recorded. Keep the URIs here to
-/// routes that stay on the calling thread.
+/// `set_default` is thread-local and `#[tokio::test]` is current-thread, so only
+/// URIs whose handling stays on the calling thread are recorded.
 async fn record_trace(uri: &str) -> TraceRecorder {
     use tracing_subscriber::layer::SubscriberExt;
 
-    // Called here explicitly rather than relying on another test in this binary
-    // reaching it first: tests run in parallel, so that ordering is not a
-    // guarantee, and without a global subscriber the callsite's `Interest` is
-    // cached as "never" and the thread-local recorder never sees it.
+    // Tests run in parallel, so no other test can be relied on to have called
+    // this first.
     init_tracing();
 
     let recorder = TraceRecorder::default();
@@ -266,22 +252,20 @@ async fn test_health_produces_no_request_span() {
 
 #[tokio::test]
 async fn test_traced_route_produces_a_request_span() {
-    // Control for the test above: without this, the assertion would also hold
-    // if tracing were broken everywhere.
+    // Control for the test above, which would also pass with tracing broken
+    // everywhere.
     assert_eq!(record_trace("/docs/openapi.json").await.span_count(), 1);
 }
 
 #[tokio::test]
 async fn test_response_is_logged_under_this_crates_target() {
-    // Regression guard: tower-http's DefaultOnResponse emits under the
-    // `tower_http` target, which the default RUST_LOG fallback in main.rs
-    // (`blaue_tonne_rust=info`) filters out. Swapping middleware::log_response
-    // for it makes request logging vanish in production while every other test
-    // still passes.
+    // tower-http's DefaultOnResponse emits under the `tower_http` target, which
+    // the default RUST_LOG fallback in main.rs (`blaue_tonne_rust=info`) filters
+    // out. Swapping middleware::log_response for it passes every other test.
     let events = record_trace("/docs/openapi.json").await.events();
 
-    // Match on the response event specifically, not just "some event from this
-    // crate" — otherwise any unrelated log line added later would satisfy this.
+    // Matched on the response event specifically, so an unrelated log line added
+    // later cannot satisfy this.
     assert!(
         events
             .iter()

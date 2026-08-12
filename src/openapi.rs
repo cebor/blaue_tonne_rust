@@ -19,8 +19,7 @@ use crate::{errors, handlers};
     ),
     info(
         title = "Blaue Tonne API",
-        // version intentionally omitted: utoipa defaults it to CARGO_PKG_VERSION,
-        // keeping the spec in sync with Cargo.toml
+        // version omitted: utoipa defaults it to CARGO_PKG_VERSION
         description = "Altpapier (Blaue Tonne) collection dates for Landkreis Rosenheim",
         contact(
             name = "Source Code",

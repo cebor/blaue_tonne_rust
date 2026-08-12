@@ -72,7 +72,7 @@ clippy:
     - rustup component add clippy
     - cargo install gitlab_clippy
   script:
-    # Generate the report first (does not fail on warnings), then run the gate
+    # Report first (does not fail on warnings), then the gate
     - cargo clippy --all-targets --all-features --message-format=json 2>/dev/null | gitlab-clippy > gl-code-quality-report.json
     - cargo clippy --all-targets --all-features -- -D warnings
   artifacts:
@@ -87,8 +87,7 @@ test:
   stage: test
   extends: .test
   variables:
-    # Trim debug info to cut link-time RAM/disk; line-tables-only still lets
-    # cargo llvm-cov map coverage correctly.
+    # Cuts link-time RAM/disk; cargo llvm-cov still maps coverage correctly.
     CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
   before_script:
     - export PATH="$CARGO_HOME/bin:$PATH"
@@ -126,10 +125,8 @@ deploy:
     - ssh "$SSH_USER"@"$SSH_SERVER" "docker pull $IMAGE_LATEST"
     - ssh "$SSH_USER"@"$SSH_SERVER" "docker stop blaue_tonne_api || true"
     - ssh "$SSH_USER"@"$SSH_SERVER" "docker rm blaue_tonne_api || true"
-    # The named volume carries the plan-PDF cache across deploys. Without it the
-    # cache would live in the writable layer that `docker rm` above throws away,
-    # so every deploy would re-download every plan — and a deploy during an
-    # upstream outage would fail to start at all.
+    # The named volume carries the plan-PDF cache across deploys; the `docker rm`
+    # above throws away the writable layer it would otherwise live in.
     - ssh "$SSH_USER"@"$SSH_SERVER" "docker run --name blaue_tonne_api -d --restart always -e FORWARDED_ALLOW_IPS='172.17.0.1' -v blaue_tonne_cache:/cache -p 127.0.0.1:8245:8080 $IMAGE_LATEST"
   environment:
     name: production
@@ -162,7 +159,7 @@ validate_deployment:
   variables:
     GIT_STRATEGY: none
   script:
-    # Retry for up to 30 s to give the container time to start
+    # Retry for up to 30 s while the container starts
     - |
       for i in $(seq 1 6); do
         curl -fsL blauetonne.stkn.org/health && exit 0

@@ -18,20 +18,17 @@ pub fn build_router(state: AppState, forwarded_allow_ips: Vec<IpNet>) -> Router 
     let api_doc_config = Config::new([api_doc_url]).use_base_layout();
     let allow_ips = Arc::new(forwarded_allow_ips);
 
-    // Resolve the real client IP (ConnectInfo / X-Forwarded-For) before tracing.
     let ip_middleware =
         axum::middleware::from_fn_with_state(allow_ips, middleware::resolve_client_ip);
 
-    // TraceLayer: creates a span per request containing method, URI and client IP.
     let trace_layer = TraceLayer::new_for_http()
         .make_span_with(middleware::make_request_span)
         .on_request(DefaultOnRequest::new().level(Level::TRACE))
         .on_response(middleware::log_response);
 
-    // Traced routes. `Router::layer` only affects routes registered before it,
-    // so /health is added outside this block: container health checks run every
-    // few seconds and would otherwise flood the logs. The trade-off is that
-    // /health is not traced at all, at any level.
+    // `Router::layer` only affects routes registered before it, so /health —
+    // added to the outer router below — carries neither layer and is not traced
+    // at any level. Keeps container health checks out of the logs.
     let traced = Router::new()
         .merge(
             SwaggerUi::new("/docs")
@@ -39,8 +36,8 @@ pub fn build_router(state: AppState, forwarded_allow_ips: Vec<IpNet>) -> Router 
                 .config(api_doc_config),
         )
         .route("/lk_rosenheim", get(handlers::lk_rosenheim_handler))
-        // Layer order with Router::layer: last `.layer()` call = outermost (runs first).
-        // ip_middleware must run before trace_layer so the span already has client_ip.
+        // Last `.layer()` = outermost = runs first. ip_middleware has to run
+        // before trace_layer so the span already has client_ip.
         .layer(trace_layer)
         .layer(ip_middleware);
 

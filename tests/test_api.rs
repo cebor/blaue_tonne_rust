@@ -1,8 +1,5 @@
-//! The request path: a lookup in the index built at startup, and nothing else.
-//!
-//! Everything that can fail while *reading* the plans fails before the server
-//! accepts connections and is covered by `test_index.rs`. What is left here is
-//! what a client can still observe: a hit, a miss, and a bad parameter.
+//! The request path: what a client can observe — a hit, a miss, and a bad
+//! parameter. Faults while reading the plans belong to `test_index.rs`.
 
 use axum::{
     body::Body,
@@ -17,9 +14,7 @@ use blaue_tonne_rust::{AppState, build_router};
 mod common;
 use common::{body_to_json, get, state_from_fixture};
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --- Helpers ---
 
 fn fake_dates(district: &str) -> Option<Vec<NaiveDate>> {
     match district {
@@ -50,9 +45,7 @@ fn state_with_dates<const N: usize>(entries: [(&str, Vec<NaiveDate>); N]) -> App
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Health check
-// ---------------------------------------------------------------------------
+// --- Health check ---
 
 #[tokio::test]
 async fn test_health_check() {
@@ -63,9 +56,7 @@ async fn test_health_check() {
     assert_eq!(body["status"], "healthy");
 }
 
-// ---------------------------------------------------------------------------
-// GET /lk_rosenheim – a district in the index
-// ---------------------------------------------------------------------------
+// --- GET /lk_rosenheim ---
 
 #[tokio::test]
 async fn test_get_dates_valid_district() {
@@ -80,14 +71,6 @@ async fn test_get_dates_valid_district() {
     assert!(arr[0].as_str().unwrap().starts_with("2026-01-15"));
 }
 
-// ---------------------------------------------------------------------------
-// GET /lk_rosenheim – a district in no plan returns 404.
-//
-// Every plan was read at startup, so an absent key is an observation about the
-// data and not a gap in what was looked at — which is what makes this a 404 and
-// not a "try again later".
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_unknown_district_returns_404() {
     let response = get(
@@ -101,18 +84,14 @@ async fn test_unknown_district_returns_404() {
     assert_eq!(body["detail"], "District not found");
 }
 
-// ---------------------------------------------------------------------------
-// GET /lk_rosenheim – missing query param returns 400
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn test_missing_district_parameter_returns_400() {
+    // 400, not 422: axum 0.8 changed the status for a missing query param.
     let response = get(state_from_fixture(), "/lk_rosenheim").await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    // The 400 must carry the same `ErrorDetail` shape as every other error —
-    // axum's own QueryRejection would be plain text, which is what the handler
-    // maps away. Regression guard for the documented response schema.
+    // The 400 carries the documented `ErrorDetail` shape rather than axum's own
+    // plain-text QueryRejection.
     assert_eq!(
         response
             .headers()
@@ -123,14 +102,6 @@ async fn test_missing_district_parameter_returns_400() {
     let body = body_to_json(response).await;
     assert_eq!(body["detail"], "Invalid or missing query parameter");
 }
-
-// ---------------------------------------------------------------------------
-// An empty or whitespace-only district is rejected as a bad parameter.
-//
-// Both normalize to "", which is not a name. Without the guard they would fall
-// through to a plain index miss and answer 404 — reporting a district the
-// caller never named as missing, instead of the unusable parameter they sent.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_empty_district_returns_400() {
@@ -146,13 +117,7 @@ async fn test_whitespace_only_district_returns_400() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-// ---------------------------------------------------------------------------
-// Every whitespace spelling of a district resolves to the same entry.
-//
-// The PDF stores names as character fragments, so matching strips whitespace on
-// both sides; the index is keyed on that form and the handler has to normalize
-// before looking up, or the spellings below would miss the row they all name.
-// ---------------------------------------------------------------------------
+// --- Normalization ---
 
 #[tokio::test]
 async fn test_whitespace_variants_resolve_to_the_same_district() {
@@ -184,10 +149,6 @@ async fn test_whitespace_variants_resolve_to_the_same_district() {
         "spellings of one district returned different dates: {bodies:?}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Two districts are answered independently
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_districts_are_answered_independently() {
@@ -229,9 +190,7 @@ async fn test_districts_are_answered_independently() {
     assert_ne!(d1, d2);
 }
 
-// ---------------------------------------------------------------------------
-// Parametrized: districts whose names carry numbers or non-ASCII characters
-// ---------------------------------------------------------------------------
+// --- District names with numbers or non-ASCII characters ---
 
 macro_rules! api_district_test {
     ($name:ident, $district:expr) => {

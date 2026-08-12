@@ -18,11 +18,8 @@ pub struct ResolvedClientIp(pub IpAddr);
 ///
 /// If the connecting peer is listed in `allow_ips` (the trusted-proxy
 /// allowlist), the leftmost `X-Forwarded-For` entry is used; otherwise the
-/// socket peer IP is used. Falls back to `127.0.0.1` when no `ConnectInfo` is
-/// present (e.g. unit tests using `oneshot`).
-///
-/// Wired up via `axum::middleware::from_fn_with_state` with the allowlist as
-/// state.
+/// socket peer IP. Falls back to `127.0.0.1` when no `ConnectInfo` is present,
+/// as in unit tests using `oneshot`.
 pub async fn resolve_client_ip(
     State(allow_ips): State<Arc<Vec<IpNet>>>,
     mut req: Request,
@@ -35,7 +32,6 @@ pub async fn resolve_client_ip(
 
     let client_ip = if let Some(peer) = peer_ip {
         if allow_ips.iter().any(|net| net.contains(&peer)) {
-            // Proxy is trusted: use leftmost entry of X-Forwarded-For
             req.headers()
                 .get("x-forwarded-for")
                 .and_then(|v| v.to_str().ok())
@@ -46,7 +42,6 @@ pub async fn resolve_client_ip(
             peer
         }
     } else {
-        // No ConnectInfo available (e.g. unit tests with oneshot)
         IpAddr::V4(Ipv4Addr::LOCALHOST)
     };
 
@@ -57,8 +52,7 @@ pub async fn resolve_client_ip(
 /// Span factory for `TraceLayer`: one span per request with method, URI and the
 /// already-resolved client IP.
 ///
-/// `/health` never reaches this — it is registered outside the traced router
-/// (see `build_router`), so no level branching is needed here.
+/// `/health` never reaches this; it is registered outside the traced router.
 pub fn make_request_span(req: &Request) -> Span {
     let client_ip = req
         .extensions()
@@ -75,11 +69,9 @@ pub fn make_request_span(req: &Request) -> Span {
 
 /// Response logger for `TraceLayer`: logs status and latency at INFO.
 ///
-/// This exists instead of `DefaultOnResponse` so the event is emitted with this
-/// crate's target. `DefaultOnResponse` logs under `tower_http::trace`, which the
-/// default `RUST_LOG` fallback (`blaue_tonne_rust=info`) filters out — request
-/// logging would silently disappear unless the operator also enabled
-/// `tower_http`.
+/// Used instead of `DefaultOnResponse`, which emits under the
+/// `tower_http::trace` target — filtered out by the default `RUST_LOG` fallback
+/// (`blaue_tonne_rust=info`).
 pub(crate) fn log_response(res: &Response, latency: Duration, _span: &Span) {
     tracing::info!(
         status = res.status().as_u16(),

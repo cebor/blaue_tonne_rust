@@ -1,10 +1,5 @@
-//! Building the index at startup.
-//!
-//! This is where every fault involving the plan source lands. The rule they all
-//! follow: the process either serves a complete index or refuses to start.
-//! There is no second attempt at request time, so a half-built index would
-//! quietly serve a district short of its dates for as long as the process runs
-//! — and nobody would see it.
+//! Building the index at startup: every fault involving the plan source, and
+//! the rule that the process either serves a complete index or refuses to start.
 
 use axum::http::StatusCode;
 
@@ -19,9 +14,7 @@ use common::{
     EventRecorder, FIXTURE_PAGES, body_to_json, fixture_pdf_bytes, get, mock_fixture, plan,
 };
 
-// ---------------------------------------------------------------------------
-// The happy path: one plan, every district in it
-// ---------------------------------------------------------------------------
+// --- Happy path ---
 
 #[tokio::test]
 async fn test_index_is_built_from_the_fetched_plan() {
@@ -42,8 +35,7 @@ async fn test_index_is_built_from_the_fetched_plan() {
     assert!(index.lookup("BadAibling").is_some_and(|d| !d.is_empty()));
     assert!(index.lookup("NonExistentDistrict").is_none());
 
-    // The count `main` logs on startup has to mean something: all 50 districts
-    // of the fixture (`DISTRICTS` in test_pdf_parser.rs) are in there.
+    // All 50 fixture districts (`DISTRICTS` in test_pdf_parser.rs).
     assert!(!index.is_empty());
     assert!(
         index.len() >= 50,
@@ -52,15 +44,7 @@ async fn test_index_is_built_from_the_fetched_plan() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The point of the whole design: the source is read once, and an unknown
-// district costs nothing afterwards.
-//
-// This is what keeps a caller from driving work at the source: with a fetch on
-// the request path, a loop of random names — none of them in any plan — would
-// re-download and re-parse every PDF, at a cost bounded by nothing the service
-// controls. Here it is five requests, four misses, and one fetch.
-// ---------------------------------------------------------------------------
+// --- The source is read once ---
 
 #[tokio::test]
 async fn test_the_source_is_read_once_and_never_again() {
@@ -97,13 +81,10 @@ async fn test_the_source_is_read_once_and_never_again() {
     mock.assert_async().await;
 }
 
-// ---------------------------------------------------------------------------
-// Faults that refuse the start.
+// --- Faults that refuse the start ---
 //
-// Each asserts on the variant *and* on the internal detail: the variant decides
-// what an operator sees in the log, and the detail is the only thing that says
-// which guard fired.
-// ---------------------------------------------------------------------------
+// Each asserts on the internal detail as well as the variant: the detail is the
+// only thing that says which guard fired.
 
 #[tokio::test]
 async fn test_upstream_server_error_refuses_to_start() {
@@ -147,9 +128,8 @@ async fn test_wrong_content_type_refuses_to_start() {
     );
 }
 
-// A plan URL that does not point at a .pdf path is rejected while `plans.yaml`
-// is read, not while it is fetched, so it is not a fault this file covers —
-// `test_load_plans_rejects_non_pdf_url` in `test_config.rs` owns it.
+// A plan URL not pointing at a .pdf path is rejected while `plans.yaml` is read:
+// `test_load_plans_rejects_non_pdf_url` in `test_config.rs` owns that.
 
 #[tokio::test]
 async fn test_unreachable_host_refuses_to_start() {
@@ -171,11 +151,8 @@ async fn test_unreachable_host_refuses_to_start() {
 
 #[tokio::test]
 async fn test_corrupt_pdf_refuses_to_start() {
-    // Downloads fine, but the bytes are not a PDF. `PlanError` has no variant
-    // separating "we could not fetch it" from "we could not read what we
-    // fetched" — every startup fault is handled identically — so the assertion
-    // is on the message, which is the only thing that tells the two apart in a
-    // log.
+    // Downloads fine, but the bytes are not a PDF. No variant separates "could
+    // not fetch" from "could not read", so the assertion is on the message.
     let mut server = mockito::Server::new_async().await;
     let _mock = server
         .mock("GET", "/corrupt.pdf")
@@ -196,21 +173,14 @@ async fn test_corrupt_pdf_refuses_to_start() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The download cap has two independent guards — a Content-Length pre-check and
-// an accumulating check inside the read loop — and they need separate tests: a
-// single large fixed body only ever reaches the first, because mockito sets
-// Content-Length for it and the loop never runs.
+// --- The download size cap ---
 //
-// Both produce the same `PlanError::Failed` variant — as does every other
-// startup fault — so the variant alone cannot tell them apart: each test would
-// still pass with its own guard removed. The message is what distinguishes
-// them, so that is what these assert on.
-// ---------------------------------------------------------------------------
+// Two independent guards, one test each: a fixed body only ever reaches the
+// Content-Length pre-check, because mockito sets the header and the read loop
+// never sees an oversized accumulation. Both produce `PlanError::Failed`, so the
+// assertions are on the message.
 
-/// Mirrors `MAX_PDF_BYTES` in `src/download.rs`. Kept as a literal rather than
-/// exported: the constant is internal, and widening the crate's public API for
-/// a test would undo the module-visibility narrowing.
+/// Mirrors `MAX_PDF_BYTES` in `src/download.rs`, which is internal to the crate.
 const MAX_PDF_BYTES: usize = 16 * 1024 * 1024;
 
 #[tokio::test]
@@ -237,9 +207,7 @@ async fn test_oversized_pdf_content_length_refuses_to_start() {
 
 #[tokio::test]
 async fn test_oversized_chunked_pdf_refuses_to_start() {
-    // Chunked transfer → no Content-Length, so the pre-check cannot fire and the
-    // in-loop cap is the only thing standing between a hostile upstream and
-    // unbounded memory growth.
+    // Chunked transfer → no Content-Length, so only the in-loop cap can fire.
     let mut server = mockito::Server::new_async().await;
     let _mock = server
         .mock("GET", "/huge.pdf")
@@ -267,12 +235,7 @@ async fn test_oversized_chunked_pdf_refuses_to_start() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Turn of the year: plans are published yearly, so for a few weeks plans.yaml
-// lists both the old and the new PDF, and at some point the old one 404s. That
-// is expected and permanent until someone prunes the config, so it must not
-// keep the service down — it is skipped, and said so once in the log.
-// ---------------------------------------------------------------------------
+// --- A retired plan (upstream 404) is skipped, not fatal ---
 
 #[tokio::test]
 async fn test_retired_plan_is_skipped_with_a_warning() {
@@ -297,8 +260,6 @@ async fn test_retired_plan_is_skipped_with_a_warning() {
 
     assert!(index.lookup("Kolbermoor").is_some());
 
-    // Silent to a client, but it has to be visible to whoever maintains
-    // plans.yaml — it will stay broken until they act.
     let warnings = recorder.at(tracing::Level::WARN);
     assert!(
         warnings.iter().any(|w| w.contains("gone upstream")),
@@ -306,14 +267,7 @@ async fn test_retired_plan_is_skipped_with_a_warning() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// ...but when the retired plan was the only one, nothing was read at all.
-//
-// Serving an empty index would answer "District not found" for every name in
-// the county — an assertion about data nobody looked at, with nothing in the
-// log above DEBUG and nothing in the 5xx rate to show for it. A fully stale
-// plans.yaml has to be loud, and refusing to start is as loud as it gets.
-// ---------------------------------------------------------------------------
+// --- ...but indexing no plan at all is fatal ---
 
 #[tokio::test]
 async fn test_only_plan_retired_refuses_to_start() {
@@ -344,10 +298,7 @@ async fn test_no_plans_refuses_to_start() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// A district that only a later plan covers still ends up in the index — the
-// build merges every plan rather than stopping at the first one that parses.
-// ---------------------------------------------------------------------------
+// --- Every plan is merged, not just the first ---
 
 #[tokio::test]
 async fn test_district_only_in_a_later_plan_is_indexed() {
@@ -377,10 +328,7 @@ async fn test_district_only_in_a_later_plan_is_indexed() {
     assert!(index.lookup("Vogtareuth").is_some_and(|d| !d.is_empty()));
 }
 
-// ---------------------------------------------------------------------------
-// A plan URL may carry a query string. The `.pdf` check looks at the path, so
-// a cache-busting `?v=…` on an otherwise valid link is not a config error.
-// ---------------------------------------------------------------------------
+// --- A plan URL may carry a query string: the `.pdf` check looks at the path ---
 
 #[tokio::test]
 async fn test_plan_url_with_query_string_is_fetched() {

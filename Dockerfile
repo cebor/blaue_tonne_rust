@@ -1,8 +1,6 @@
 # ─── Stage 1: chef (cargo-chef base) ──────────────────────────────────────────
 FROM rust:1-slim-trixie AS chef
-# curl is needed at build time by utoipa-swagger-ui's build script (downloads the
-# Swagger UI assets). No other build deps: aws-lc-sys (via reqwest's rustls/aws-lc-rs)
-# builds with the base image's gcc/libc6-dev; no cmake/make, no OpenSSL.
+# curl: utoipa-swagger-ui's build script downloads the Swagger UI assets.
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
@@ -24,10 +22,8 @@ COPY plans.yaml ./plans.yaml
 RUN cargo build --release
 
 # ─── Stage 3b: cachedir ───────────────────────────────────────────────────────
-# Sole purpose: be a source for the COPY below. The runtime image is distroless,
-# so there is no shell for a `RUN mkdir` there, and the process (uid 65532)
-# cannot create /cache itself either — / is root-owned. A directory therefore has
-# to be COPYd in with the right owner, and COPY needs somewhere to copy from.
+# The COPY source for /cache below. Distroless has no shell for a `RUN mkdir`,
+# and uid 65532 cannot create /cache itself because / is root-owned.
 FROM chef AS cachedir
 RUN mkdir -p /cache
 
@@ -37,14 +33,10 @@ WORKDIR /app
 COPY --from=builder /app/target/release/blaue_tonne_rust /usr/local/bin/blaue_tonne_rust
 COPY --from=builder /app/plans.yaml /app/plans.yaml
 
-# Downloaded plan PDFs. Owned by uid 65532 so the process can write it — and so
-# that a fresh *named* volume mounted here inherits that ownership from the
-# image (Docker copies content and ownership into an empty named volume on first
-# use). A bind mount does not: the host directory's own ownership wins, so it
-# has to be chowned to 65532:65532 by hand. Without a volume the cache still
-# survives a container restart, which is what breaks the boot-time restart loop.
-# No VOLUME instruction: that would create an unnamed volume on every `docker
-# run` without -v, and nothing ever cleans those up.
+# Downloaded plan PDFs, owned by uid 65532 so the process can write here. An
+# empty named volume mounted here inherits that ownership; a bind mount does not
+# and has to be chowned to 65532:65532 by hand. No VOLUME instruction, which
+# would create an unnamed volume on every `docker run` without -v.
 COPY --from=cachedir --chown=65532:65532 /cache /cache
 
 EXPOSE 8080
@@ -58,7 +50,6 @@ ENV PLANS_PATH=/app/plans.yaml \
     PDF_CACHE_TTL=30d
 
 # distroless :nonroot already runs as uid 65532; no USER/groupadd needed.
-# No tini: the binary runs as PID 1 and handles SIGINT/SIGTERM itself via
-# axum's graceful shutdown (see shutdown_signal in main.rs), so ctrl+c and
-# `docker stop` terminate cleanly. The app spawns no children (no reaping).
+# The binary runs as PID 1 and handles SIGINT/SIGTERM itself (shutdown_signal in
+# main.rs); it spawns no children, so there is nothing to reap.
 ENTRYPOINT ["/usr/local/bin/blaue_tonne_rust"]

@@ -6,10 +6,7 @@ use blaue_tonne_rust::config::{
     DEFAULT_CACHE_TTL, cache_dir_from, load_plans, parse_cache_ttl, parse_forwarded_allow_ips,
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
+// --- Helpers ---
 /// Write `content` to a uniquely-named temp file and return its path.
 fn write_temp(name: &str, content: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -27,10 +24,7 @@ fn write_temp(name: &str, content: &str) -> PathBuf {
     path
 }
 
-// ---------------------------------------------------------------------------
-// load_plans
-// ---------------------------------------------------------------------------
-
+// --- load_plans ---
 #[test]
 fn test_load_plans_success() {
     let yaml = r#"
@@ -74,16 +68,7 @@ fn test_load_plans_missing_plans_key_errors() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Plan URL validation.
-//
-// Whether a URL is fetchable at all is a property of the config, so it is
-// checked while the config is read, where the message can name the offending
-// URL. Left to `download_pdf` it would still be fatal — every plan fault at
-// startup is — but it would surface as a failed fetch halfway through the index
-// build, blaming the source for a typo of ours.
-// ---------------------------------------------------------------------------
-
+// --- Plan URL validation ---
 #[test]
 fn test_load_plans_rejects_non_pdf_url() {
     let yaml = r#"
@@ -140,10 +125,7 @@ plans:
     assert_eq!(plans.len(), 1);
 }
 
-// ---------------------------------------------------------------------------
-// parse_forwarded_allow_ips
-// ---------------------------------------------------------------------------
-
+// --- parse_forwarded_allow_ips ---
 #[test]
 fn test_parse_allow_ips_empty() {
     assert!(parse_forwarded_allow_ips("").is_empty());
@@ -186,10 +168,7 @@ fn test_parse_allow_ips_ipv6() {
     assert!(nets[0].contains(&"::1".parse::<std::net::IpAddr>().unwrap()));
 }
 
-// ---------------------------------------------------------------------------
-// parse_cache_ttl
-// ---------------------------------------------------------------------------
-
+// --- parse_cache_ttl ---
 #[test]
 fn test_parse_cache_ttl_accepts_every_suffix() {
     assert_eq!(parse_cache_ttl("45s"), Duration::from_secs(45));
@@ -206,8 +185,7 @@ fn test_parse_cache_ttl_treats_a_bare_number_as_seconds() {
 
 #[test]
 fn test_parse_cache_ttl_zero_is_legal() {
-    // Not a mistake to correct: zero means "never fresh", which still writes the
-    // cache and so keeps the stale fallback working.
+    // Zero means "never fresh", which still writes the cache.
     assert_eq!(parse_cache_ttl("0"), Duration::ZERO);
     assert_eq!(parse_cache_ttl("0d"), Duration::ZERO);
 }
@@ -237,10 +215,7 @@ fn test_default_cache_ttl_is_a_month() {
     assert_eq!(DEFAULT_CACHE_TTL, Duration::from_secs(30 * 86_400));
 }
 
-// ---------------------------------------------------------------------------
-// cache_dir_from
-// ---------------------------------------------------------------------------
-
+// --- cache_dir_from ---
 #[test]
 fn test_cache_dir_prefers_an_explicit_path() {
     assert_eq!(
@@ -251,9 +226,7 @@ fn test_cache_dir_prefers_an_explicit_path() {
 
 #[test]
 fn test_an_empty_cache_dir_switches_the_cache_off() {
-    // The distinction the whole configuration rests on: *unset* means the
-    // default location, *set but empty* means off. One variable, no way to
-    // configure a contradiction.
+    // *Unset* means the default location, *set but empty* means off.
     assert_eq!(
         cache_dir_from(Some(""), Some("/xdg"), Some("/home/u")),
         None

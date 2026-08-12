@@ -27,8 +27,8 @@ async fn test_bad_request_response() {
 
 #[tokio::test]
 async fn test_the_internal_detail_never_reaches_the_client() {
-    // `BadRequest` is the only variant carrying free text — axum's rejection
-    // string. It is logged, never serialized, and this is what pins that.
+    // `BadRequest` is the only variant carrying free text: axum's rejection
+    // string, which is logged and never serialized.
     let response = AppError::BadRequest("Failed to deserialize query string: xyzzy".to_string())
         .into_response();
     let body = body_to_json(response).await;
@@ -36,25 +36,11 @@ async fn test_the_internal_detail_never_reaches_the_client() {
     assert!(!body["detail"].as_str().unwrap().contains("xyzzy"));
 }
 
-// ---------------------------------------------------------------------------
-// No response may disclose that this service fetches and parses PDFs from a
-// third party. Asserted over every variant at once, so a message added later
-// is covered without anyone remembering to extend this file. A brand-new
-// *variant* is a different matter — `assert_every_variant_is_covered` below
-// turns that into a compile error rather than a silent gap.
-//
-// Startup faults are `PlanError`s and never become a response, so this holds by
-// construction: no `AppError` variant even has a plan URL to leak. The test
-// earns its place anyway, because the invariant is about what may be *added*,
-// not about what is here — a variant carrying upstream text is exactly what
-// someone would reach for first if request-time fetching were introduced.
-// ---------------------------------------------------------------------------
+// --- No response may disclose that this service fetches and parses PDFs ---
 
-/// Makes the list below exhaustive by construction: adding a variant to
-/// `AppError` stops this from compiling, which is the reminder to add it to
-/// `variants` in the test — the list itself cannot enforce that on its own.
-///
-/// Never called; it exists purely for the compile-time check.
+/// Never called. Adding a variant to `AppError` stops this from compiling,
+/// which is the reminder to extend `variants` in the test below — a list of
+/// values cannot enforce exhaustiveness on its own.
 #[allow(dead_code)]
 fn assert_every_variant_is_covered(e: &AppError) {
     match e {
@@ -65,16 +51,13 @@ fn assert_every_variant_is_covered(e: &AppError) {
 
 #[tokio::test]
 async fn test_no_variant_discloses_the_data_source() {
-    // The free text is deliberately full of things that must not come out the
-    // other side, so the test would fail loudly if a variant ever started
-    // echoing its internal detail.
+    // The free text carries everything that must not come out the other side.
     let variants = [
         AppError::BadRequest("https://chiemgau-recycling.test/plan.pdf: 500".to_string()),
         AppError::DistrictNotFound,
     ];
 
-    // Substrings that would each betray the architecture: the file format, the
-    // fact that a plan is fetched, or that something sits behind us.
+    // Each of these would betray the file format, the fetch, or the source.
     const DISCLOSING: &[&str] = &[
         "pdf",
         "plan",

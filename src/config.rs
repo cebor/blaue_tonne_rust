@@ -15,17 +15,12 @@ struct Config {
     plans: Vec<Plan>,
 }
 
-/// Reject a plan URL that `download_pdf` could never fetch.
+/// Reject a plan URL that `download_pdf` could never fetch: scheme must be
+/// `http`/`https`, and the URL *path* must end in `.pdf`.
 ///
-/// Whether a URL is fetchable at all is a property of the config, not of the
-/// plan behind it. Checking it here makes a typo in `plans.yaml` fail while the
-/// config is being read, naming the offending URL; left to `download_pdf` it
-/// would still be fatal — every plan fault at startup is — but it would surface
-/// as a failed fetch halfway through the index build, blaming the source for
-/// something we wrote ourselves.
-///
-/// The `.pdf` check is on the URL *path*, so a query string or fragment on an
-/// otherwise valid link (`…/Abfuhrplan_2027.pdf?v=2`) is not rejected.
+/// Matching on the path rather than the whole string lets a link carry a query
+/// string or fragment (`…/Abfuhrplan_2027.pdf?v=2`). This is the only place the
+/// rule lives; `download.rs` does not repeat it.
 fn validate_plan_url(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid plan URL {url:?}: {e}"))?;
 
@@ -64,7 +59,6 @@ pub fn parse_forwarded_allow_ips(raw: &str) -> Vec<IpNet> {
             if s.is_empty() {
                 return None;
             }
-            // Accept both plain IPs ("127.0.0.1") and CIDR notation ("10.0.0.0/8").
             s.parse::<IpNet>()
                 .or_else(|_| s.parse::<std::net::IpAddr>().map(IpNet::from))
                 .map_err(|e| {
@@ -75,26 +69,14 @@ pub fn parse_forwarded_allow_ips(raw: &str) -> Vec<IpNet> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// PDF cache configuration
-// ---------------------------------------------------------------------------
-
 /// How long a cached plan PDF counts as fresh when `PDF_CACHE_TTL` is unset.
-///
-/// One month: the plans themselves change once a year, so this is not about
-/// catching a new plan (a restart does that) but about not serving bytes nobody
-/// has re-checked in an unbounded amount of time.
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Directory name appended to whichever cache root is in effect.
 const CACHE_SUBDIR: &str = "blaue_tonne_rust";
 
 /// Parse `PDF_CACHE_TTL` — `30d`, `12h`, `90m`, `45s`, or a bare number of
-/// seconds.
-///
-/// Like [`parse_forwarded_allow_ips`], bad input warns and falls back rather
-/// than failing: a typo in a cache knob must not keep the service from starting,
-/// and the fallback is a working default, not a guess at what was meant.
+/// seconds. Bad input warns and falls back to [`DEFAULT_CACHE_TTL`].
 ///
 /// `0` is legal and means "never fresh": every plan is re-downloaded, but the
 /// cache is still written, so the stale fallback in `build_index` keeps working.
@@ -130,14 +112,11 @@ pub fn parse_cache_ttl(raw: &str) -> Duration {
 /// Resolve the PDF cache directory from the three environment values that can
 /// determine it. `None` means the cache is switched off.
 ///
-/// Split out from [`cache_dir_from_env`] so it can be tested without mutating
-/// process-wide environment variables, which is not safe while other tests run
-/// in parallel.
+/// `PDF_CACHE_DIR` **unset** picks the default location; **set to an empty
+/// value** turns the cache off.
 ///
-/// The distinction that matters: `PDF_CACHE_DIR` **unset** picks the default
-/// location, `PDF_CACHE_DIR` **set to an empty value** turns the cache off. One
-/// variable therefore covers both the path and the off switch, and there is no
-/// way to configure a contradiction.
+/// A pure function of its three inputs so it is testable without mutating
+/// process-wide environment variables.
 pub fn cache_dir_from(
     cache_dir: Option<&str>,
     xdg_cache_home: Option<&str>,
@@ -157,9 +136,7 @@ pub fn cache_dir_from(
                 .filter(|s| !s.is_empty())
                 .map(|h| PathBuf::from(h).join(".cache"))
         })
-        // Always writable, but wiped often enough that the cache may simply be
-        // cold. Better than no cache at all, and better than failing to start
-        // for want of a home directory.
+        // Last resort: always writable, but may be wiped between starts.
         .unwrap_or_else(std::env::temp_dir);
 
     Some(root.join(CACHE_SUBDIR))

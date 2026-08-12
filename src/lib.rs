@@ -1,6 +1,5 @@
-// Modules reached directly by the integration tests stay `pub`; everything the
-// tests only need indirectly is `pub(crate)` and surfaces through the re-exports
-// below, so there is exactly one public path per item.
+// Modules the integration tests reach directly are `pub`; the rest is
+// `pub(crate)` and surfaces through the re-exports below.
 pub mod cache;
 pub mod config;
 pub mod errors;

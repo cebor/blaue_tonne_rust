@@ -51,9 +51,7 @@ fn dates_to_iso(dates: &[NaiveDate]) -> Vec<String> {
     params(
         ("district" = String, Query, description = "Name of the district (Gemeinde), e.g. \"Bad Aibling\"")
     ),
-    // These descriptions are served to clients at /docs, so they describe the
-    // outcome only — never the data source behind it. The list is short because
-    // the route is: everything that could fail has already failed at startup.
+    // Served to clients at /docs: outcome only, never the data source behind it.
     responses(
         (status = 200, description = "Collection dates in RFC 3339 UTC format", body = Vec<String>),
         (status = 400, description = "Missing or invalid `district` query parameter", body = ErrorDetail),
@@ -63,9 +61,9 @@ fn dates_to_iso(dates: &[NaiveDate]) -> Vec<String> {
 )]
 pub async fn lk_rosenheim_handler(
     State(state): State<AppState>,
-    // Taken as a `Result` rather than a bare `Query` so the rejection becomes an
-    // `AppError` too. Axum's own rejection is a plain-text body, which would be
-    // the one response that does not match the documented `ErrorDetail` shape.
+    // A `Result` rather than a bare `Query`, so the rejection becomes an
+    // `AppError`: axum's own rejection is a plain-text body, which would not
+    // match the documented `ErrorDetail` shape.
     params: Result<Query<DistrictQuery>, QueryRejection>,
 ) -> Result<Json<Vec<String>>, AppError> {
     let Query(params) = params.map_err(|e| AppError::BadRequest(e.body_text()))?;
@@ -74,17 +72,14 @@ pub async fn lk_rosenheim_handler(
     // and " Bad Aibling" all resolve to the one entry they name.
     let district = normalize_district(&params.district);
 
-    // An all-whitespace name normalizes to "", which is not a district — telling
-    // the caller their parameter is unusable is more accurate than reporting a
-    // district they never named as missing.
+    // Empty and whitespace-only both normalize to "", which is not a district.
+    // Without this they would fall through to a plain index miss and answer 404.
     if district.is_empty() {
         return Err(AppError::BadRequest(
             "district must not be empty or whitespace-only".to_string(),
         ));
     }
 
-    // Every plan was read at startup, so an absent key is an observation, not a
-    // gap in what we looked at: this is the whole request path.
     let dates = state
         .index
         .lookup(&district)
