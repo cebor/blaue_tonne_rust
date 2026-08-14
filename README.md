@@ -38,7 +38,7 @@ blaue_tonne_rust/
 │   ├── test_errors.rs            # AppError → HTTP response tests
 │   └── fixtures/
 │       └── lk_rosenheim_2026.pdf
-├── plans.yaml                    # Configuration: PDF URLs and page ranges
+├── plans.yaml                    # Configuration: PDF URLs
 ├── Cargo.toml
 ├── Dockerfile                    # Multi-stage Docker build
 └── README.md                     # This file
@@ -49,7 +49,7 @@ blaue_tonne_rust/
 - `src/index.rs` – `DistrictIndex` and `build_index`, which reads every plan once at startup
 - `src/state.rs` – `AppState`, an `Arc<DistrictIndex>` and nothing else
 - `src/pdf_parser.rs` – PDF text extraction via `pdf_oxide`, row reconstruction, date parsing
-- `plans.yaml` – Single-source config for PDF URLs and page ranges (1-indexed)
+- `plans.yaml` – Single-source config for the plan PDF URLs
 
 **Startup:** the plans are read before the listener binds — from the on-disk cache when a copy is still fresh, from the source otherwise. A plan that can be read from neither is fatal: the process logs the reason and exits 1 rather than starting with an index that would answer some districts short of their dates for the rest of its lifetime. Two exceptions:
 
@@ -171,9 +171,10 @@ Edit `plans.yaml` to add or modify PDF sources:
 
 ```yaml
 plans:
-  - url: "https://example.com/schedule.pdf"
-    pages: "1,2"  # Comma-separated page numbers (1-indexed)
+  - "https://example.com/schedule.pdf"
 ```
+
+A plan **is** a URL — the config is a list of them and nothing else. Every page of a PDF is read, and a page without a district table contributes nothing, so there is no page selection to keep in sync with the document. A key the service does not read aborts startup rather than being ignored, so a leftover setting cannot look like it still has an effect.
 
 The config path can be overridden with the `PLANS_PATH` env var. Changes take effect on the next restart — the plans are read once, when the process starts.
 
@@ -187,7 +188,7 @@ This table is the canonical list — `CLAUDE.md` documents only the reasoning be
 |----------|---------|-------------|
 | `PLANS_PATH` | `plans.yaml` | Path to the plans config. Read once, at startup — a change needs a restart |
 | `BIND_ADDR` | `0.0.0.0:8080` | TCP address to listen on |
-| `FORWARDED_ALLOW_IPS` | *(empty)* | Comma-separated IPs/CIDRs whose `X-Forwarded-For` is trusted; `*` trusts all. Invalid entries warn and are skipped |
+| `FORWARDED_ALLOW_IPS` | *(empty)* | Comma-separated IPs/CIDRs whose `X-Forwarded-For` is trusted; `*` trusts every peer and makes the rest of the list redundant. Invalid entries warn and are skipped |
 | `RUST_LOG` | `blaue_tonne_rust=info` | `tracing-subscriber` filter. When unset, falls back to `blaue_tonne_rust=info`; when set it takes full control. `/health` is never logged either way, at any level |
 | `PDF_CACHE_DIR` | `$XDG_CACHE_HOME/blaue_tonne_rust`, else `$HOME/.cache/…`, else `$TMPDIR/…` | Where downloaded plan PDFs are kept (`/cache` in the container). **Set but empty turns the cache off**; unset means the default path |
 | `PDF_CACHE_TTL` | `30d` | How long a cached plan counts as fresh. `30d`, `12h`, `90m`, `45s`, or a bare number of seconds. Invalid input warns and falls back |

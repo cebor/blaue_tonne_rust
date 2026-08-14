@@ -11,7 +11,6 @@ use chrono::NaiveDate;
 use reqwest::Client;
 
 use crate::cache::PdfCache;
-use crate::config::Plan;
 use crate::download::download_pdf;
 use crate::errors::PlanError;
 use crate::pdf_parser::{index_districts, normalize_district};
@@ -60,7 +59,10 @@ impl DistrictIndex {
 ///
 /// `cache` is consulted before every download, and is used as a fallback when a
 /// download fails.
-pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictIndex, PlanError> {
+pub async fn build_index(
+    plan_urls: &[String],
+    cache: &PdfCache,
+) -> Result<DistrictIndex, PlanError> {
     // Local to the build: after this returns, the service does no network I/O.
     let client = Client::builder()
         .timeout(DOWNLOAD_TIMEOUT)
@@ -70,7 +72,7 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
     let mut index = DistrictIndex::default();
     let mut plans_indexed = 0usize;
 
-    for plan in plans {
+    for url in plan_urls {
         // Reported as fields on the single INFO line at the end of the loop
         // body. `age` is zero for `url` and the file's age otherwise.
         let mut source = "url";
@@ -78,15 +80,15 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
 
         // A fresh cached copy answers the plan without touching the network. If
         // it will not parse, the entry is bad rather than the plan: refetch.
-        let mut parsed = match cache.get(&plan.url).filter(|c| c.fresh) {
-            Some(cached) => match parse_plan(cached.bytes, &plan.pages).await {
+        let mut parsed = match cache.get(url).filter(|c| c.fresh) {
+            Some(cached) => match parse_plan(cached.bytes).await {
                 Ok(parsed) => {
                     source = "cache";
                     age = cached.age;
                     Some(parsed)
                 }
                 Err(e) => {
-                    tracing::warn!(url = %plan.url, error = %e, "cached copy is unusable, refetching");
+                    tracing::warn!(%url, error = %e, "cached copy is unusable, refetching");
                     None
                 }
             },
@@ -94,19 +96,19 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
         };
 
         if parsed.is_none() {
-            match download_pdf(&client, &plan.url).await {
+            match download_pdf(&client, url).await {
                 // Parse before write, so bytes that will not parse never reach
                 // the cache.
                 Ok(bytes) => {
-                    parsed = Some(parse_plan(bytes.clone(), &plan.pages).await?);
-                    cache.put(&plan.url, &bytes);
+                    parsed = Some(parse_plan(bytes.clone()).await?);
+                    cache.put(url, &bytes);
                 }
 
                 // 404 means retired, so the cache is not consulted: a copy would
                 // keep a withdrawn plan alive for as long as the file survives.
                 Err(PlanError::Retired(_)) => {
                     tracing::warn!(
-                        url = %plan.url,
+                        %url,
                         "plan is gone upstream, skipping it — prune it from plans.yaml"
                     );
                     continue;
@@ -115,14 +117,14 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
                 // Source unreachable: fall back to an expired copy, with a WARN
                 // as the only signal that this happened.
                 Err(e) => {
-                    let Some(stale) = cache.get(&plan.url) else {
+                    let Some(stale) = cache.get(url) else {
                         return Err(e);
                     };
 
-                    match parse_plan(stale.bytes, &plan.pages).await {
+                    match parse_plan(stale.bytes).await {
                         Ok(from_cache) => {
                             tracing::warn!(
-                                url = %plan.url,
+                                %url,
                                 error = %e,
                                 age_secs = stale.age.as_secs(),
                                 "plan could not be fetched, serving a stale cached copy"
@@ -135,7 +137,7 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
                         // failed fetch is the cause.
                         Err(parse_error) => {
                             tracing::warn!(
-                                url = %plan.url,
+                                %url,
                                 error = %parse_error,
                                 "stale cached copy is unusable too"
                             );
@@ -155,7 +157,7 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
         }
 
         tracing::info!(
-            url = %plan.url,
+            %url,
             source,
             age_secs = age.as_secs(),
             districts,
@@ -169,7 +171,7 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
     if plans_indexed == 0 {
         return Err(PlanError::failed(format!(
             "none of the {} configured plan(s) could be read",
-            plans.len()
+            plan_urls.len()
         )));
     }
 
@@ -181,12 +183,8 @@ pub async fn build_index(plans: &[Plan], cache: &PdfCache) -> Result<DistrictInd
 /// `spawn_blocking` for the panic, not for the runtime: `pdf_oxide` is fed
 /// third-party bytes and a panic in it arrives here as a `JoinError`, becoming a
 /// `PlanError` instead of a backtrace on stderr and exit 101.
-async fn parse_plan(
-    pdf_bytes: Bytes,
-    pages: &str,
-) -> Result<HashMap<String, Vec<NaiveDate>>, PlanError> {
-    let pages = pages.to_string();
-    tokio::task::spawn_blocking(move || index_districts(&pdf_bytes, &pages))
+async fn parse_plan(pdf_bytes: Bytes) -> Result<HashMap<String, Vec<NaiveDate>>, PlanError> {
+    tokio::task::spawn_blocking(move || index_districts(&pdf_bytes))
         .await
         .map_err(|e| PlanError::failed(format!("PDF parse task failed: {e}")))?
 }

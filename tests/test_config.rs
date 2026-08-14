@@ -29,20 +29,17 @@ fn write_temp(name: &str, content: &str) -> PathBuf {
 fn test_load_plans_success() {
     let yaml = r#"
 plans:
-  - url: "https://example.test/a.pdf"
-    pages: "1,2"
-  - url: "https://example.test/b.pdf"
-    pages: "3"
+  - "https://example.test/a.pdf"
+  - "https://example.test/b.pdf"
 "#;
     let path = write_temp("plans_ok", yaml);
     let plans = load_plans(&path).expect("should parse");
     std::fs::remove_file(&path).ok();
 
-    assert_eq!(plans.len(), 2);
-    assert_eq!(plans[0].url, "https://example.test/a.pdf");
-    assert_eq!(plans[0].pages, "1,2");
-    assert_eq!(plans[1].url, "https://example.test/b.pdf");
-    assert_eq!(plans[1].pages, "3");
+    assert_eq!(
+        plans,
+        ["https://example.test/a.pdf", "https://example.test/b.pdf"]
+    );
 }
 
 #[test]
@@ -68,13 +65,38 @@ fn test_load_plans_missing_plans_key_errors() {
     assert!(result.is_err());
 }
 
+#[test]
+fn test_load_plans_rejects_a_top_level_key_the_service_does_not_read() {
+    // Refused rather than ignored, so a setting cannot sit in the file looking
+    // like it has an effect.
+    let yaml = "plans: []\nlog_level: debug\n";
+    let path = write_temp("plans_extra_key", yaml);
+    let result = load_plans(&path);
+    std::fs::remove_file(&path).ok();
+    let error = result.expect_err("an unknown top-level key must fail at load time");
+    assert!(
+        error.to_string().contains("log_level"),
+        "the message must name the unknown key, got: {error}"
+    );
+}
+
+#[test]
+fn test_load_plans_rejects_a_plan_written_as_a_mapping() {
+    // A plan is a URL string; a mapping in its place is refused rather than
+    // half-read, so a config written to the wrong shape fails at startup.
+    let yaml = "plans:\n  - url: \"https://example.test/schedule.pdf\"\n";
+    let path = write_temp("plans_mapping", yaml);
+    let result = load_plans(&path);
+    std::fs::remove_file(&path).ok();
+    result.expect_err("a mapping in place of a URL must fail at load time");
+}
+
 // --- Plan URL validation ---
 #[test]
 fn test_load_plans_rejects_non_pdf_url() {
     let yaml = r#"
 plans:
-  - url: "https://example.test/schedule.html"
-    pages: "1"
+  - "https://example.test/schedule.html"
 "#;
     let path = write_temp("plans_not_pdf", yaml);
     let result = load_plans(&path);
@@ -89,8 +111,7 @@ plans:
 fn test_load_plans_rejects_non_http_scheme() {
     let yaml = r#"
 plans:
-  - url: "file:///etc/schedule.pdf"
-    pages: "1"
+  - "file:///etc/schedule.pdf"
 "#;
     let path = write_temp("plans_bad_scheme", yaml);
     let result = load_plans(&path);
@@ -102,8 +123,7 @@ plans:
 fn test_load_plans_rejects_unparseable_url() {
     let yaml = r#"
 plans:
-  - url: "not a url at all.pdf"
-    pages: "1"
+  - "not a url at all.pdf"
 "#;
     let path = write_temp("plans_unparseable", yaml);
     let result = load_plans(&path);
@@ -116,8 +136,7 @@ fn test_load_plans_accepts_pdf_url_with_query() {
     // The check is on the path, so a cache-busting query is not a config error.
     let yaml = r#"
 plans:
-  - url: "https://example.test/Abfuhrplan_2027.PDF?v=2#page=3"
-    pages: "1"
+  - "https://example.test/Abfuhrplan_2027.PDF?v=2#page=3"
 "#;
     let path = write_temp("plans_query", yaml);
     let plans = load_plans(&path).expect("a query string must not disqualify the URL");
@@ -156,9 +175,29 @@ fn test_parse_allow_ips_mixed_with_whitespace() {
 
 #[test]
 fn test_parse_allow_ips_skips_invalid_entries() {
-    // Invalid entries (including "*") are logged and skipped; valid ones remain.
-    let nets = parse_forwarded_allow_ips("127.0.0.1, not-an-ip, *, 10.0.0.0/8");
+    // Invalid entries are logged and skipped; valid ones remain.
+    let nets = parse_forwarded_allow_ips("127.0.0.1, not-an-ip, 10.0.0.0/8");
     assert_eq!(nets.len(), 2);
+}
+
+#[test]
+fn test_parse_allow_ips_star_trusts_every_peer() {
+    for raw in ["*", " * ", "127.0.0.1, *", "*, not-an-ip"] {
+        let nets = parse_forwarded_allow_ips(raw);
+        // The two default routes, not the entries written alongside the `*`.
+        assert_eq!(
+            nets.len(),
+            2,
+            "{raw:?} should expand to both default routes"
+        );
+        for probe in ["1.2.3.4", "127.0.0.1", "::1", "2001:db8::1"] {
+            let ip = probe.parse::<std::net::IpAddr>().unwrap();
+            assert!(
+                nets.iter().any(|net| net.contains(&ip)),
+                "{raw:?} must trust {probe}"
+            );
+        }
+    }
 }
 
 #[test]

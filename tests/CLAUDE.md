@@ -7,6 +7,7 @@ Deliberate gaps:
 - **`download_pdf`'s timeout path.** The timeout is a fixed `DOWNLOAD_TIMEOUT` (30 s, in `index.rs`), so provoking it means a test that sleeps. It produces a `PlanError::Failed` from `transport_error` — the same arm every other transport fault takes, covered by `test_unreachable_host_refuses_to_start` via a `.invalid` host.
 - **`cache.rs`'s `put` write/rename error arms.** Reaching them needs a directory that turns unwritable *between* `from_env` and the write, and they do the same thing (WARN, carry on) as the covered `from_env` path.
 - **`errors.rs`'s `is_server_error()` branch** in `into_response`, which no current variant can reach. The root `CLAUDE.md` says why it stays.
+- **`index_districts`'s `page_count()` error arm.** Reaching it needs bytes that `PdfDocument::from_bytes` accepts but whose page tree neither `/Count` nor `pdf_oxide`'s fallback scan can read. It produces the same `PlanError::Failed` as every other unreadable-PDF fault, covered by `test_invalid_bytes_rejected`.
 
 ## Which binary owns what
 
@@ -16,7 +17,7 @@ Deliberate gaps:
 | `test_cache.rs` | the same function with an enabled cache | The four `build_index` decisions tabulated in the root `CLAUDE.md` |
 | `test_api.rs` | the router over a seeded or fixture-built index | What a client can observe: hit, miss, bad parameter |
 
-Helpers more than one binary needs — the fixture bytes, `plan`, `mock_fixture`, `temp_dir`, `state_from_fixture`, `body_to_json`, `get`, `EventRecorder` — live in `tests/common/mod.rs`, which carries a blanket `#![allow(dead_code)]` because each binary uses a different subset.
+Helpers more than one binary needs — the fixture bytes, `mock_fixture`, `temp_dir`, `state_from_fixture`, `body_to_json`, `get`, `EventRecorder` — live in `tests/common/mod.rs`, which carries a blanket `#![allow(dead_code)]` because each binary uses a different subset.
 
 `test_cache.rs` gives each test its own `temp_dir(…)` (pid + nanos, like `write_temp` in `test_config.rs` — there is no `tempfile` dependency) and cleans it up at the end rather than in a `Drop` guard, so a failing assertion leaves the directory behind.
 

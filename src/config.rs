@@ -1,18 +1,17 @@
 use ipnet::IpNet;
 use serde::Deserialize;
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct Plan {
-    pub url: String,
-    pub pages: String,
-}
-
+/// `plans` is a list of PDF URLs and nothing else — `index_districts` reads
+/// every page of a plan, so there is no per-plan setting left to carry.
+/// `deny_unknown_fields` keeps a stray top-level key from being ignored.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Config {
-    plans: Vec<Plan>,
+    plans: Vec<String>,
 }
 
 /// Reject a plan URL that `download_pdf` could never fetch: scheme must be
@@ -38,21 +37,38 @@ fn validate_plan_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn load_plans(path: &Path) -> Result<Vec<Plan>, Box<dyn std::error::Error>> {
+/// Read `plans.yaml` into the list of plan PDF URLs, every one of them validated.
+pub fn load_plans(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let content = fs::read_to_string(path)?;
     let config: Config = serde_yaml_ng::from_str(&content)?;
-    for plan in &config.plans {
-        validate_plan_url(&plan.url)?;
+    for url in &config.plans {
+        validate_plan_url(url)?;
     }
     Ok(config.plans)
 }
+
+/// The two default routes, which together cover every address. `*` expands to
+/// these, so trusting every peer stays a value in the allowlist rather than a
+/// special case `resolve_client_ip` has to know about.
+const TRUST_EVERY_PEER: [IpNet; 2] = [
+    IpNet::new_assert(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+    IpNet::new_assert(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+];
 
 /// Parse the `FORWARDED_ALLOW_IPS` value into a list of trusted networks.
 ///
 /// Accepts both plain IPs (`"127.0.0.1"`) and CIDR notation (`"10.0.0.0/8"`),
 /// comma-separated. Whitespace is trimmed and empty entries are ignored.
 /// Invalid entries are logged via `tracing::warn!` and skipped.
+///
+/// A `*` entry trusts every peer and makes the rest of the list redundant, so it
+/// short-circuits to [`TRUST_EVERY_PEER`]. Startup logs the two networks rather
+/// than the `*` that produced them.
 pub fn parse_forwarded_allow_ips(raw: &str) -> Vec<IpNet> {
+    if raw.split(',').any(|entry| entry.trim() == "*") {
+        return TRUST_EVERY_PEER.to_vec();
+    }
+
     raw.split(',')
         .filter_map(|s| {
             let s = s.trim();

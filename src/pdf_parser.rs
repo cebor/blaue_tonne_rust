@@ -38,16 +38,6 @@ fn page_rows(doc: &PdfDocument, page_idx: usize) -> Result<Vec<Vec<String>>, Pla
     Ok(rows.into_iter().map(|(_, texts)| texts).collect())
 }
 
-/// Parse comma-separated 1-based page numbers (e.g. `"1,2"`) into 0-based
-/// indices for `pdf_oxide`. Invalid entries are ignored.
-fn parse_page_numbers(pages: &str) -> Vec<usize> {
-    pages
-        .split(',')
-        .filter_map(|s| s.trim().parse::<usize>().ok())
-        .filter_map(|n| n.checked_sub(1))
-        .collect()
-}
-
 /// Parse a date from a cell string. The date is always the last 8 characters
 /// in "dd.mm.yy" format (e.g. "06.01.26" or "Mo. 06.01.26" → "06.01.26").
 fn parse_date(cell: &str) -> Option<NaiveDate> {
@@ -73,23 +63,23 @@ pub fn normalize_district(district: &str) -> String {
     district.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-/// Read every district of a plan PDF in one pass.
-///
-/// `pdf_bytes` – raw bytes of the downloaded PDF.
-/// `pages`     – comma-separated 1-based page numbers, e.g. `"1,2"`.
+/// Read every district of a plan PDF in one pass, over every page of it.
 ///
 /// Returns a map from the normalized district name (see [`normalize_district`])
 /// to its collection dates. First occurrence wins, so pages are read in order.
-pub fn index_districts(
-    pdf_bytes: &[u8],
-    pages: &str,
-) -> Result<HashMap<String, Vec<NaiveDate>>, PlanError> {
+///
+/// A page carrying no district table contributes nothing, which is why there is
+/// no page selection to configure: the row shape is the filter.
+pub fn index_districts(pdf_bytes: &[u8]) -> Result<HashMap<String, Vec<NaiveDate>>, PlanError> {
     let doc = PdfDocument::from_bytes(pdf_bytes.to_vec())
         .map_err(|e| PlanError::failed(e.to_string()))?;
+    let page_count = doc
+        .page_count()
+        .map_err(|e| PlanError::failed(format!("could not count the pages: {e}")))?;
 
     let mut index: HashMap<String, Vec<NaiveDate>> = HashMap::new();
 
-    for page_idx in parse_page_numbers(pages) {
+    for page_idx in 0..page_count {
         let rows = page_rows(&doc, page_idx)?;
 
         for (row_idx, row) in rows.iter().enumerate() {

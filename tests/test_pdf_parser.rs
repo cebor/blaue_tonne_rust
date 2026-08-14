@@ -9,8 +9,6 @@ fn fixture_pdf() -> Vec<u8> {
     std::fs::read(&path).expect("fixture PDF not found")
 }
 
-const PLANS_PAGES: &str = "1,2";
-
 // --- Every known district appears in the index with at least one date ---
 //
 // The macro generates one #[test] per district and the DISTRICTS constant, so
@@ -24,7 +22,7 @@ macro_rules! district_tests {
             #[test]
             fn $name() {
                 let pdf = fixture_pdf();
-                let index = index_districts(&pdf, PLANS_PAGES)
+                let index = index_districts(&pdf)
                     .unwrap_or_else(|e| panic!("fixture failed to index: {:?}", e));
                 let dates = index
                     .get(&normalize_district($district))
@@ -97,7 +95,7 @@ district_tests! {
 #[test]
 fn test_unknown_district_is_absent_from_the_index() {
     let pdf = fixture_pdf();
-    let index = index_districts(&pdf, PLANS_PAGES).expect("fixture must index");
+    let index = index_districts(&pdf).expect("fixture must index");
     assert!(!index.contains_key("NonexistentDistrict"));
 }
 
@@ -105,7 +103,7 @@ fn test_unknown_district_is_absent_from_the_index() {
 fn test_invalid_bytes_rejected() {
     // `index_districts` can only ever produce `PlanError::Failed`, so matching
     // the variant would assert nothing — the message carries the reason.
-    let result = index_districts(b"not a pdf", "1");
+    let result = index_districts(b"not a pdf");
     assert!(
         matches!(result, Err(PlanError::Failed(ref d)) if d.contains("cross-reference")),
         "expected a parse failure for invalid bytes, got: {result:?}"
@@ -113,12 +111,18 @@ fn test_invalid_bytes_rejected() {
 }
 
 #[test]
-fn test_page_past_the_end_of_the_document_is_an_error() {
+fn test_every_page_of_the_document_is_read() {
+    // The fixture's districts are split across its two pages, so an index that
+    // stopped after the first would be missing the second page's names.
     let pdf = fixture_pdf();
-    let result = index_districts(&pdf, "999");
+    let index = index_districts(&pdf).expect("fixture must index");
     assert!(
-        matches!(result, Err(PlanError::Failed(ref d)) if d.contains("Page index 998")),
-        "expected the out-of-range page to be named, got: {result:?}"
+        index.contains_key(&normalize_district("Albaching")),
+        "page 1"
+    );
+    assert!(
+        index.contains_key(&normalize_district("Vogtareuth")),
+        "page 2"
     );
 }
 
@@ -156,7 +160,7 @@ fn test_index_keys_are_already_normalized() {
     // The handler looks up the normalized name, so a key that changes under
     // normalization would be unreachable over HTTP.
     let pdf = fixture_pdf();
-    let index = index_districts(&pdf, PLANS_PAGES).expect("fixture must index");
+    let index = index_districts(&pdf).expect("fixture must index");
     for key in index.keys() {
         assert_eq!(&normalize_district(key), key, "index key {key:?}");
     }

@@ -16,6 +16,7 @@ use tower::ServiceExt;
 use tracing::Level;
 
 use blaue_tonne_rust::ResolvedClientIp;
+use blaue_tonne_rust::config::parse_forwarded_allow_ips;
 use blaue_tonne_rust::index::DistrictIndex;
 use blaue_tonne_rust::middleware::{make_request_span, resolve_client_ip};
 use blaue_tonne_rust::{AppState, build_router};
@@ -118,6 +119,30 @@ async fn test_resolve_ip_trusted_via_cidr() {
         .await
         .unwrap();
     assert_eq!(body_to_string(response).await, "9.9.9.9");
+}
+
+#[tokio::test]
+async fn test_resolve_ip_star_trusts_any_peer() {
+    // `*` is expanded by `parse_forwarded_allow_ips`, so this is the only thing
+    // proving the expansion reaches the middleware — which has no `*` case.
+    for (peer, forwarded) in [
+        ("203.0.113.9:5000", "1.2.3.4"),
+        ("[2001:db8::5]:5000", "1.2.3.4"),
+    ] {
+        let peer: SocketAddr = peer.parse().unwrap();
+        let response = router(parse_forwarded_allow_ips("*"))
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("x-forwarded-for", forwarded)
+                    .extension(ConnectInfo(peer))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_to_string(response).await, forwarded, "peer {peer}");
+    }
 }
 
 // --- make_request_span ---

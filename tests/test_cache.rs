@@ -8,7 +8,7 @@ use blaue_tonne_rust::errors::PlanError;
 use blaue_tonne_rust::index::build_index;
 
 mod common;
-use common::{EventRecorder, FIXTURE_PAGES, mock_fixture, plan, temp_dir};
+use common::{EventRecorder, mock_fixture, temp_dir};
 
 /// A TTL long enough that nothing in a test run can outlive it.
 const FRESH: Duration = Duration::from_secs(3600);
@@ -37,10 +37,7 @@ async fn test_a_second_start_reads_the_plan_from_disk_and_makes_no_request() {
     // One request across two full startups; `.expect(1)` is what pins it.
     let mock = mock_fixture(&mut server, "/schedule.pdf").await.expect(1);
 
-    let plans = [plan(
-        format!("{}/schedule.pdf", server.url()),
-        FIXTURE_PAGES,
-    )];
+    let plans = [format!("{}/schedule.pdf", server.url())];
     let cache = PdfCache::new(dir.clone(), FRESH);
 
     let (recorder, _guard) = EventRecorder::install();
@@ -77,15 +74,9 @@ async fn test_the_cache_file_is_named_after_the_plan_it_holds() {
     let _mock = mock_fixture(&mut server, "/Abfuhrplan_2026.pdf").await;
 
     let cache = PdfCache::new(dir.clone(), FRESH);
-    build_index(
-        &[plan(
-            format!("{}/Abfuhrplan_2026.pdf", server.url()),
-            FIXTURE_PAGES,
-        )],
-        &cache,
-    )
-    .await
-    .expect("must index");
+    build_index(&[format!("{}/Abfuhrplan_2026.pdf", server.url())], &cache)
+        .await
+        .expect("must index");
 
     let files = files_in(&dir);
     assert!(
@@ -110,10 +101,7 @@ async fn test_an_expired_entry_is_downloaded_again() {
     // answers.
     let mock = mock_fixture(&mut server, "/schedule.pdf").await.expect(2);
 
-    let plans = [plan(
-        format!("{}/schedule.pdf", server.url()),
-        FIXTURE_PAGES,
-    )];
+    let plans = [format!("{}/schedule.pdf", server.url())];
     // A zero TTL means "already expired" without backdating an mtime: nothing
     // is ever fresh, but entries are still written.
     let cache = PdfCache::new(dir.clone(), Duration::ZERO);
@@ -136,10 +124,7 @@ async fn test_an_unreachable_source_falls_back_to_the_expired_copy() {
 
     // First start: the source answers, the plan lands in the cache.
     let good = mock_fixture(&mut server, "/schedule.pdf").await;
-    let plans = [plan(
-        format!("{}/schedule.pdf", server.url()),
-        FIXTURE_PAGES,
-    )];
+    let plans = [format!("{}/schedule.pdf", server.url())];
     let cache = PdfCache::new(dir.clone(), Duration::ZERO);
     build_index(&plans, &cache).await.expect("first start");
     good.remove_async().await;
@@ -177,14 +162,7 @@ async fn test_an_unreachable_source_without_a_cached_copy_is_still_fatal() {
         .await;
 
     let cache = PdfCache::new(dir.clone(), FRESH);
-    let result = build_index(
-        &[plan(
-            format!("{}/schedule.pdf", server.url()),
-            FIXTURE_PAGES,
-        )],
-        &cache,
-    )
-    .await;
+    let result = build_index(&[format!("{}/schedule.pdf", server.url())], &cache).await;
 
     assert!(
         matches!(result, Err(PlanError::Failed(_))),
@@ -205,8 +183,8 @@ async fn test_a_retired_plan_is_skipped_even_though_it_is_cached() {
     let last_year = mock_fixture(&mut server, "/last-year.pdf").await;
     let _this_year = mock_fixture(&mut server, "/this-year.pdf").await;
     let plans = [
-        plan(format!("{}/last-year.pdf", server.url()), FIXTURE_PAGES),
-        plan(format!("{}/this-year.pdf", server.url()), FIXTURE_PAGES),
+        format!("{}/last-year.pdf", server.url()),
+        format!("{}/this-year.pdf", server.url()),
     ];
     let cache = PdfCache::new(dir.clone(), Duration::ZERO);
     build_index(&plans, &cache).await.expect("first start");
@@ -245,10 +223,7 @@ async fn test_a_corrupt_cache_file_is_replaced_rather_than_fatal() {
     let mut server = mockito::Server::new_async().await;
     let _mock = mock_fixture(&mut server, "/schedule.pdf").await;
 
-    let plans = [plan(
-        format!("{}/schedule.pdf", server.url()),
-        FIXTURE_PAGES,
-    )];
+    let plans = [format!("{}/schedule.pdf", server.url())];
     let cache = PdfCache::new(dir.clone(), FRESH);
     build_index(&plans, &cache).await.expect("first start");
 
@@ -285,10 +260,7 @@ async fn test_bytes_that_will_not_parse_are_never_cached() {
         .create_async()
         .await;
 
-    let plans = [plan(
-        format!("{}/schedule.pdf", server.url()),
-        FIXTURE_PAGES,
-    )];
+    let plans = [format!("{}/schedule.pdf", server.url())];
     let cache = PdfCache::new(dir.clone(), FRESH);
 
     let result = build_index(&plans, &cache).await;
@@ -316,10 +288,7 @@ async fn test_a_disabled_cache_neither_reads_nor_writes() {
     // Seeded through an enabled cache first, so "wrote nothing" and "read
     // nothing" can be told apart.
     let mock = mock_fixture(&mut server, "/schedule.pdf").await.expect(2);
-    let plans = [plan(
-        format!("{}/schedule.pdf", server.url()),
-        FIXTURE_PAGES,
-    )];
+    let plans = [format!("{}/schedule.pdf", server.url())];
     build_index(&plans, &PdfCache::new(dir.clone(), FRESH))
         .await
         .expect("seed the cache");

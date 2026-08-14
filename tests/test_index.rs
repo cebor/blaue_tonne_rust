@@ -10,9 +10,7 @@ use blaue_tonne_rust::index::build_index;
 use blaue_tonne_rust::pdf_parser::index_districts;
 
 mod common;
-use common::{
-    EventRecorder, FIXTURE_PAGES, body_to_json, fixture_pdf_bytes, get, mock_fixture, plan,
-};
+use common::{EventRecorder, body_to_json, fixture_pdf_bytes, get, mock_fixture};
 
 // --- Happy path ---
 
@@ -22,10 +20,7 @@ async fn test_index_is_built_from_the_fetched_plan() {
     let _mock = mock_fixture(&mut server, "/schedule.pdf").await;
 
     let index = build_index(
-        &[plan(
-            format!("{}/schedule.pdf", server.url()),
-            FIXTURE_PAGES,
-        )],
+        &[format!("{}/schedule.pdf", server.url())],
         &PdfCache::disabled(),
     )
     .await
@@ -59,10 +54,7 @@ async fn test_the_source_is_read_once_and_never_again() {
         .await;
 
     let state = AppState::build(
-        &[plan(
-            format!("{}/schedule.pdf", server.url()),
-            FIXTURE_PAGES,
-        )],
+        &[format!("{}/schedule.pdf", server.url())],
         &PdfCache::disabled(),
     )
     .await
@@ -96,7 +88,7 @@ async fn test_upstream_server_error_refuses_to_start() {
         .await;
 
     let result = build_index(
-        &[plan(format!("{}/broken.pdf", server.url()), "1")],
+        &[format!("{}/broken.pdf", server.url())],
         &PdfCache::disabled(),
     )
     .await;
@@ -118,7 +110,7 @@ async fn test_wrong_content_type_refuses_to_start() {
         .await;
 
     let result = build_index(
-        &[plan(format!("{}/fake.pdf", server.url()), "1")],
+        &[format!("{}/fake.pdf", server.url())],
         &PdfCache::disabled(),
     )
     .await;
@@ -136,10 +128,7 @@ async fn test_unreachable_host_refuses_to_start() {
     // ".invalid" never resolves (RFC 2606) → an immediate send error rather than
     // a 30 s timeout.
     let result = build_index(
-        &[plan(
-            "http://nonexistent.invalid/schedule.pdf".to_string(),
-            "1",
-        )],
+        &["http://nonexistent.invalid/schedule.pdf".to_string()],
         &PdfCache::disabled(),
     )
     .await;
@@ -163,7 +152,7 @@ async fn test_corrupt_pdf_refuses_to_start() {
         .await;
 
     let result = build_index(
-        &[plan(format!("{}/corrupt.pdf", server.url()), "1")],
+        &[format!("{}/corrupt.pdf", server.url())],
         &PdfCache::disabled(),
     )
     .await;
@@ -195,7 +184,7 @@ async fn test_oversized_pdf_content_length_refuses_to_start() {
         .await;
 
     let result = build_index(
-        &[plan(format!("{}/huge.pdf", server.url()), "1")],
+        &[format!("{}/huge.pdf", server.url())],
         &PdfCache::disabled(),
     )
     .await;
@@ -225,7 +214,7 @@ async fn test_oversized_chunked_pdf_refuses_to_start() {
         .await;
 
     let result = build_index(
-        &[plan(format!("{}/huge.pdf", server.url()), "1")],
+        &[format!("{}/huge.pdf", server.url())],
         &PdfCache::disabled(),
     )
     .await;
@@ -250,8 +239,8 @@ async fn test_retired_plan_is_skipped_with_a_warning() {
     let (recorder, _guard) = EventRecorder::install();
     let index = build_index(
         &[
-            plan(format!("{}/last-year.pdf", server.url()), FIXTURE_PAGES),
-            plan(format!("{}/this-year.pdf", server.url()), FIXTURE_PAGES),
+            format!("{}/last-year.pdf", server.url()),
+            format!("{}/this-year.pdf", server.url()),
         ],
         &PdfCache::disabled(),
     )
@@ -279,7 +268,7 @@ async fn test_only_plan_retired_refuses_to_start() {
         .await;
 
     let result = build_index(
-        &[plan(format!("{}/last-year.pdf", server.url()), "1")],
+        &[format!("{}/last-year.pdf", server.url())],
         &PdfCache::disabled(),
     )
     .await;
@@ -301,11 +290,12 @@ async fn test_no_plans_refuses_to_start() {
 // --- Every plan is merged, not just the first ---
 
 #[tokio::test]
-async fn test_district_only_in_a_later_plan_is_indexed() {
-    // Premise: "Vogtareuth" is not on page 1 of the fixture, so a plan limited
-    // to that page cannot contribute it.
-    let page_one = index_districts(&fixture_pdf_bytes(), "1").expect("fixture must parse");
-    assert!(!page_one.contains_key("Vogtareuth"));
+async fn test_dates_from_several_plans_are_concatenated() {
+    let from_one_plan = index_districts(&fixture_pdf_bytes())
+        .expect("fixture must parse")
+        .remove("Vogtareuth")
+        .expect("the fixture must carry Vogtareuth")
+        .len();
 
     let mut server = mockito::Server::new_async().await;
     let _mock = server
@@ -317,15 +307,17 @@ async fn test_district_only_in_a_later_plan_is_indexed() {
         .create_async()
         .await;
 
+    // The same PDF configured twice: both plans are read, and the second one's
+    // dates are appended rather than merged away.
     let url = format!("{}/schedule.pdf", server.url());
-    let index = build_index(
-        &[plan(url.clone(), "1"), plan(url, FIXTURE_PAGES)],
-        &PdfCache::disabled(),
-    )
-    .await
-    .expect("both plans must index");
+    let index = build_index(&[url.clone(), url], &PdfCache::disabled())
+        .await
+        .expect("both plans must index");
 
-    assert!(index.lookup("Vogtareuth").is_some_and(|d| !d.is_empty()));
+    assert_eq!(
+        index.lookup("Vogtareuth").map(<[_]>::len),
+        Some(from_one_plan * 2)
+    );
 }
 
 // --- A plan URL may carry a query string: the `.pdf` check looks at the path ---
@@ -336,10 +328,7 @@ async fn test_plan_url_with_query_string_is_fetched() {
     let _mock = mock_fixture(&mut server, "/schedule.pdf?v=2").await;
 
     let state = AppState::build(
-        &[plan(
-            format!("{}/schedule.pdf?v=2", server.url()),
-            FIXTURE_PAGES,
-        )],
+        &[format!("{}/schedule.pdf?v=2", server.url())],
         &PdfCache::disabled(),
     )
     .await

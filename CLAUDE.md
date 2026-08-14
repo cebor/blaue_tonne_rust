@@ -15,6 +15,8 @@ Tests require the fixture PDF at `tests/fixtures/lk_rosenheim_2026.pdf` (already
 Within the traced sub-router, `ip_middleware` is added last (`.layer()`) so it is outermost and runs **before** `TraceLayer`, ensuring the span already has `client_ip`. The middleware logic lives in `src/middleware.rs`.
 
 1. **`ip_middleware`** — `middleware::resolve_client_ip`, wired up via `axum::middleware::from_fn_with_state` with the `FORWARDED_ALLOW_IPS` allowlist as state. If the connecting peer is in the allowlist, the leftmost `X-Forwarded-For` entry is used; otherwise the socket IP. Falls back to `127.0.0.1` in unit tests (no `ConnectInfo`). Inserts the `ResolvedClientIp` extension.
+
+   **`*` is resolved in `config::parse_forwarded_allow_ips`, not here.** It expands to the two default routes (`0.0.0.0/0`, `::/0`), which already contain every address, so "trust every peer" stays a value in the allowlist and `resolve_client_ip` keeps its single `contains` check. Startup logs the two networks rather than the `*` that produced them.
 2. **`TraceLayer`** — `middleware::make_request_span` creates an `info_span!` per request (method, URI, client_ip); `middleware::log_response` logs status + latency_ms at INFO.
 
 `log_response` is **not** `DefaultOnResponse`: tower-http emits under the `tower_http::trace` target, which the default `RUST_LOG` fallback (`blaue_tonne_rust=info`) filters out. `test_response_is_logged_under_this_crates_target` pins this.
@@ -130,7 +132,11 @@ Which test binary owns which failure mode, the deliberate coverage gaps, and the
 
 ## `plans.yaml`
 
-`pages` is passed directly to `index_districts`, which parses the comma-separated 1-based page numbers and uses them as 0-based indices for `pdf_oxide`. A page number past the end of the document is a `PlanError::Failed`, and therefore a refused startup.
+**A plan is a URL and nothing else** — literally: `plans` deserializes into `Vec<String>`, there is no `Plan` struct, and `build_index` takes `&[String]`. `index_districts` reads every page of the PDF, from `0..doc.page_count()`. There is no page selection to configure, because the row shape already is the filter: a page carrying no district table produces no name row with dates around it and contributes nothing. That also means no config value can fall out of step with a re-paginated PDF.
+
+`Config` carries `#[serde(deny_unknown_fields)]`, so a top-level key the service does not read aborts startup instead of being silently ignored, and a plan written as a mapping (`- url: …`) fails on the type rather than being half-read. `test_load_plans_rejects_a_top_level_key_the_service_does_not_read` and `test_load_plans_rejects_a_plan_written_as_a_mapping` pin both.
+
+`test_every_page_of_the_document_is_read` in `test_pdf_parser.rs` asserts on a district from each page of the fixture, so an index that stopped early fails.
 
 `url` is validated in `config::validate_plan_url` at load time — scheme must be `http`/`https`, and the URL **path** must end in `.pdf`. Matching on the path rather than the whole string lets a link carry a query string or fragment (`…/Abfuhrplan_2027.pdf?v=2`). This is the **only** place the rule lives; `download.rs` does not repeat it, because every URL it can be handed has already been through `load_plans`. `test_load_plans_rejects_non_pdf_url` in `test_config.rs` pins it.
 

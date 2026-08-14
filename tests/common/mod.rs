@@ -9,21 +9,9 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use blaue_tonne_rust::config::Plan;
 use blaue_tonne_rust::index::DistrictIndex;
 use blaue_tonne_rust::pdf_parser::index_districts;
 use blaue_tonne_rust::{AppState, build_router};
-
-/// Pages of the fixture that carry the district tables — the value the
-/// production `plans.yaml` uses.
-pub const FIXTURE_PAGES: &str = "1,2";
-
-pub fn plan(url: String, pages: &str) -> Plan {
-    Plan {
-        url,
-        pages: pages.to_string(),
-    }
-}
 
 /// Registers a mock serving the fixture PDF at `path`.
 pub async fn mock_fixture(server: &mut mockito::ServerGuard, path: &str) -> mockito::Mock {
@@ -64,9 +52,7 @@ pub fn fixture_pdf_bytes() -> Bytes {
 /// The index the startup path would produce for the fixture plan, without going
 /// through the network.
 pub fn fixture_index() -> DistrictIndex {
-    DistrictIndex::from_pairs(
-        index_districts(&fixture_pdf_bytes(), FIXTURE_PAGES).expect("fixture must parse"),
-    )
+    DistrictIndex::from_pairs(index_districts(&fixture_pdf_bytes()).expect("fixture must parse"))
 }
 
 pub fn state_from_fixture() -> AppState {
