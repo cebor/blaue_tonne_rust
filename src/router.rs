@@ -6,7 +6,6 @@ use axum::{Router, routing::get};
 use ipnet::IpNet;
 use tower_http::trace::{DefaultOnRequest, TraceLayer};
 use tracing::Level;
-use utoipa::OpenApi;
 use utoipa_swagger_ui::{Config, SwaggerUi};
 
 use crate::openapi::ApiDoc;
@@ -32,7 +31,7 @@ pub fn build_router(state: AppState, forwarded_allow_ips: Vec<IpNet>) -> Router 
     let traced = Router::new()
         .merge(
             SwaggerUi::new("/docs")
-                .url(api_doc_url, ApiDoc::openapi())
+                .url(api_doc_url, ApiDoc::with_districts(state.index.names()))
                 .config(api_doc_config),
         )
         .route("/lk_rosenheim", get(handlers::lk_rosenheim_handler))

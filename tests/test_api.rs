@@ -222,3 +222,53 @@ api_district_test!(test_api_aschau, "Aschau");
 api_district_test!(test_api_bruckmuhl_1, "Bruckmühl 1");
 api_district_test!(test_api_feldkirchen_2, "Feldkirchen 2");
 api_district_test!(test_api_raubling_3, "Raubling 3");
+
+// --- The documented district parameter ---
+
+/// The `district` parameter's `enum` in the served spec.
+async fn documented_districts(state: AppState) -> Vec<String> {
+    let spec = body_to_json(get(state, "/docs/openapi.json").await).await;
+    let parameter = spec["paths"]["/lk_rosenheim"]["get"]["parameters"]
+        .as_array()
+        .expect("the operation must document its parameters")
+        .iter()
+        .find(|p| p["name"] == "district")
+        .expect("district must be documented");
+
+    parameter["schema"]["enum"]
+        .as_array()
+        .expect("district must be documented as an enum")
+        .iter()
+        .map(|v| v.as_str().expect("enum values are strings").to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn test_the_documented_districts_are_the_indexed_ones() {
+    // The dropdown /docs offers comes from the index, not from a constant, so
+    // it cannot name a district the service would answer 404 for.
+    let districts = documented_districts(state_from_fixture()).await;
+
+    assert_eq!(districts.len(), 50);
+    assert!(districts.contains(&"Bad Aibling".to_string()));
+    assert!(districts.contains(&"Nußdorf am Inn".to_string()));
+    assert!(districts.contains(&"Großkarolinenfeld 1".to_string()));
+    // Sorted: a dropdown in HashMap order would reshuffle on every start.
+    let mut sorted = districts.clone();
+    sorted.sort();
+    assert_eq!(districts, sorted);
+}
+
+#[tokio::test]
+async fn test_a_documented_district_is_one_the_service_answers() {
+    // The printed name, not the normalized key: what the dropdown offers has to
+    // work when "Try it out" sends it back verbatim.
+    for district in documented_districts(state_from_fixture()).await {
+        let response = get(
+            state_from_fixture(),
+            &format!("/lk_rosenheim?district={}", urlencoding::encode(&district)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "district {district:?}");
+    }
+}

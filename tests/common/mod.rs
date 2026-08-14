@@ -52,7 +52,8 @@ pub fn fixture_pdf_bytes() -> Bytes {
 /// The index the startup path would produce for the fixture plan, without going
 /// through the network.
 pub fn fixture_index() -> DistrictIndex {
-    DistrictIndex::from_pairs(index_districts(&fixture_pdf_bytes()).expect("fixture must parse"))
+    let parsed = index_districts(&fixture_pdf_bytes()).expect("fixture must parse");
+    DistrictIndex::from_pairs(parsed.into_values().map(|d| (d.name, d.dates)))
 }
 
 pub fn state_from_fixture() -> AppState {

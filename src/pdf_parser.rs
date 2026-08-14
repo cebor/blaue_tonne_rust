@@ -53,6 +53,15 @@ fn parse_dates_from_row(row: &[String]) -> Vec<NaiveDate> {
     row.iter().filter_map(|cell| parse_date(cell)).collect()
 }
 
+/// One district as a plan carries it.
+#[derive(Debug, Clone)]
+pub struct District {
+    /// The name as printed, e.g. "Bad Aibling" — what `/docs` offers and what a
+    /// human types. The index is keyed on [`normalize_district`] of it.
+    pub name: String,
+    pub dates: Vec<NaiveDate>,
+}
+
 /// Canonical form of a district name: whitespace stripped.
 ///
 /// District names in the PDF are stored as character fragments (e.g.
@@ -71,14 +80,14 @@ pub fn normalize_district(district: &str) -> String {
 /// An entry is a row without dates of its own, between two rows that have them.
 /// A page carrying no district table contributes nothing, which is why there is
 /// no page selection to configure: the row shape is the filter.
-pub fn index_districts(pdf_bytes: &[u8]) -> Result<HashMap<String, Vec<NaiveDate>>, PlanError> {
+pub fn index_districts(pdf_bytes: &[u8]) -> Result<HashMap<String, District>, PlanError> {
     let doc = PdfDocument::from_bytes(pdf_bytes.to_vec())
         .map_err(|e| PlanError::failed(e.to_string()))?;
     let page_count = doc
         .page_count()
         .map_err(|e| PlanError::failed(format!("could not count the pages: {e}")))?;
 
-    let mut index: HashMap<String, Vec<NaiveDate>> = HashMap::new();
+    let mut index: HashMap<String, District> = HashMap::new();
 
     for page_idx in 0..page_count {
         let rows = page_rows(&doc, page_idx)?;
@@ -89,14 +98,12 @@ pub fn index_districts(pdf_bytes: &[u8]) -> Result<HashMap<String, Vec<NaiveDate
                 continue;
             }
 
-            // The key is the whole row concatenated and stripped — the form
-            // `normalize_district` produces.
-            let name: String = row
-                .iter()
-                .flat_map(|s| s.chars().filter(|c| !c.is_whitespace()))
-                .collect();
+            // Cells join without a separator: a split name is split mid-word
+            // ("Großkaro" + "linenfeld 1"), never at a space.
+            let name = row.concat().trim().to_string();
+            let key = normalize_district(&name);
 
-            if name.is_empty() {
+            if key.is_empty() {
                 continue;
             }
 
@@ -120,9 +127,10 @@ pub fn index_districts(pdf_bytes: &[u8]) -> Result<HashMap<String, Vec<NaiveDate
                 continue;
             }
 
-            index
-                .entry(name)
-                .or_insert_with(|| before.into_iter().chain(after).collect());
+            index.entry(key).or_insert_with(|| District {
+                name,
+                dates: before.into_iter().chain(after).collect(),
+            });
         }
     }
 

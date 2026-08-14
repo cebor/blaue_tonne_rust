@@ -295,6 +295,7 @@ async fn test_dates_from_several_plans_are_concatenated() {
         .expect("fixture must parse")
         .remove("Vogtareuth")
         .expect("the fixture must carry Vogtareuth")
+        .dates
         .len();
 
     let mut server = mockito::Server::new_async().await;

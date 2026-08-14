@@ -13,7 +13,7 @@ use reqwest::Client;
 use crate::cache::PdfCache;
 use crate::download::download_pdf;
 use crate::errors::PlanError;
-use crate::pdf_parser::{index_districts, normalize_district};
+use crate::pdf_parser::{District, index_districts, normalize_district};
 
 /// Whole-exchange timeout for fetching one plan PDF at startup.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -21,31 +21,44 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 /// All known districts and their collection dates. Immutable once built.
 #[derive(Debug, Default)]
 pub struct DistrictIndex {
-    dates: HashMap<String, Vec<NaiveDate>>,
+    districts: HashMap<String, District>,
 }
 
 impl DistrictIndex {
     /// Look a district up by its [`normalize_district`]ed name.
     pub fn lookup(&self, normalized_district: &str) -> Option<&[NaiveDate]> {
-        self.dates.get(normalized_district).map(Vec::as_slice)
+        self.districts
+            .get(normalized_district)
+            .map(|d| d.dates.as_slice())
+    }
+
+    /// Every district's printed name, sorted — the list `/docs` offers.
+    ///
+    /// Sorted by code point, so umlaut initials land after `Z`. Deterministic is
+    /// what a dropdown needs; collation is not worth a dependency.
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.districts.values().map(|d| d.name.clone()).collect();
+        names.sort();
+        names
     }
 
     pub fn len(&self) -> usize {
-        self.dates.len()
+        self.districts.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.dates.is_empty()
+        self.districts.is_empty()
     }
 
     /// Build an index from ready-made entries, for tests that want a known set
     /// of districts without a PDF. Normalizes the keys, so a caller cannot seed
-    /// an entry that `lookup` could never reach.
+    /// an entry that `lookup` could never reach; the name as given stays the
+    /// printed one.
     pub fn from_pairs(entries: impl IntoIterator<Item = (String, Vec<NaiveDate>)>) -> Self {
         Self {
-            dates: entries
+            districts: entries
                 .into_iter()
-                .map(|(district, dates)| (normalize_district(&district), dates))
+                .map(|(name, dates)| (normalize_district(&name), District { name, dates }))
                 .collect(),
         }
     }
@@ -151,9 +164,18 @@ pub async fn build_index(
         let districts = parsed.iter().flatten().count();
 
         // Dates for a district several plans carry are concatenated in plan
-        // order — not deduplicated, not sorted.
-        for (district, dates) in parsed.into_iter().flatten() {
-            index.dates.entry(district).or_default().extend(dates);
+        // order — not deduplicated, not sorted. The first plan's spelling of the
+        // name is the one kept.
+        for (key, district) in parsed.into_iter().flatten() {
+            index
+                .districts
+                .entry(key)
+                .or_insert_with(|| District {
+                    name: district.name,
+                    dates: Vec::new(),
+                })
+                .dates
+                .extend(district.dates);
         }
 
         tracing::info!(
@@ -183,7 +205,7 @@ pub async fn build_index(
 /// `spawn_blocking` for the panic, not for the runtime: `pdf_oxide` is fed
 /// third-party bytes and a panic in it arrives here as a `JoinError`, becoming a
 /// `PlanError` instead of a backtrace on stderr and exit 101.
-async fn parse_plan(pdf_bytes: Bytes) -> Result<HashMap<String, Vec<NaiveDate>>, PlanError> {
+async fn parse_plan(pdf_bytes: Bytes) -> Result<HashMap<String, District>, PlanError> {
     tokio::task::spawn_blocking(move || index_districts(&pdf_bytes))
         .await
         .map_err(|e| PlanError::failed(format!("PDF parse task failed: {e}")))?

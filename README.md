@@ -97,6 +97,8 @@ GET /docs                   # Swagger UI
 GET /docs/openapi.json      # OpenAPI JSON spec
 ```
 
+`district` is documented as an enum of the districts the running process actually indexed, so "Try it out" offers them as a dropdown rather than a free-text field. The list comes from the index, not from a constant — it changes with `plans.yaml`, on restart.
+
 ## Development
 
 ### Prerequisites

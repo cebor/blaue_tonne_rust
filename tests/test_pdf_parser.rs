@@ -24,11 +24,11 @@ macro_rules! district_tests {
                 let pdf = fixture_pdf();
                 let index = index_districts(&pdf)
                     .unwrap_or_else(|e| panic!("fixture failed to index: {:?}", e));
-                let dates = index
+                let district = index
                     .get(&normalize_district($district))
                     .unwrap_or_else(|| panic!("district '{}' is not in the index", $district));
                 assert!(
-                    !dates.is_empty(),
+                    !district.dates.is_empty(),
                     "no dates indexed for district '{}'",
                     $district
                 );

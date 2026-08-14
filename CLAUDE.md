@@ -33,6 +33,8 @@ Within the traced sub-router, `ip_middleware` is added last (`.layer()`) so it i
 
 District names in this PDF are rendered as character fragments (e.g. "Bad Aibling" → cells `["B","ad","A","ib","ling"]`). Matching strips whitespace from both the concatenated row text and the district name before comparing. Dates live on the row **before** and the row **after** the district name row.
 
+A parsed district is a `District { name, dates }`: `name` is the row's cells concatenated and trimmed — the name **as printed** ("Bad Aibling", "Großkarolinenfeld 1") — and the map is keyed on `normalize_district` of it. The printed form exists for one reason: `/docs` offers it as a dropdown, and a value picked there has to work when sent back verbatim (it does — `lookup` normalizes). Cells join without a separator because a split name is split mid-word (`["Großkaro", "linenfeld 1"]`), never at a space; a plan that split at a space would degrade the *display* name, not the lookup.
+
 Row reconstruction in `src/pdf_parser.rs` sorts `pdf_oxide` spans by Y descending (PDF Y increases upward), then X ascending, grouping them into a row while the Y delta stays within `Y_TOLERANCE`. No per-character X-gap splitting is needed — `pdf_oxide` already returns coherent spans.
 
 50 districts are supported (see `DISTRICTS` in `tests/test_pdf_parser.rs`).
@@ -46,6 +48,8 @@ The cost: a district whose two date rows straddle a page break would be dropped.
 ## The index is built at startup
 
 `build_index` (`src/index.rs`) downloads and parses every plan once, before `main` binds the listener. `AppState` holds nothing but the resulting `Arc<DistrictIndex>`; the `reqwest::Client` is local to the build, because after it returns the service does no network I/O. A request is `index.lookup(&normalize_district(name))` and nothing else.
+
+`DistrictIndex::names()` returns the printed names, sorted, and has exactly one caller: `build_router`, which hands them to `ApiDoc::with_districts`. Sorted because a `HashMap`-ordered dropdown would reshuffle on every start; sorted by code point, so umlaut initials land after `Z` — deterministic is what a dropdown needs, and collation is not worth a dependency.
 
 **A plan that can be read from neither the source nor the cache is fatal.** There is no second attempt at request time, so starting anyway would serve a district short of its dates for the lifetime of the process. `main` logs the fault at ERROR and exits 1.
 
@@ -129,6 +133,18 @@ Keeping startup faults out of `AppError` is what lets `IntoResponse` carry statu
 **Nothing a client can observe may reveal that this service fetches and parses PDFs from a third party** — not the message, not the status code, not the `/docs` response descriptions. It holds by construction: no `AppError` variant has a plan URL to leak. `test_no_variant_discloses_the_data_source` covers what may be *added*; `assert_every_variant_is_covered` next to it is an exhaustive `match` that stops compiling when `AppError` grows.
 
 `lk_rosenheim_handler` takes `Result<Query<DistrictQuery>, QueryRejection>` rather than a bare `Query`, so the 400 also becomes an `AppError` — axum's own rejection is a plain-text body, which would be the one response not matching the documented `ErrorDetail` schema.
+
+## `/docs` offers the districts it indexed
+
+`ApiDoc::with_districts` (`src/openapi.rs`) takes the doc the derive macro built and replaces the `district` parameter's schema with a string `enum` of the indexed names. Swagger UI renders an `enum` on a query parameter as a dropdown, so "Try it out" becomes a pick list instead of a free-text field.
+
+**It is patched at runtime rather than declared in the `#[openapi]` attribute** because the district list is *data* — it comes out of the PDFs. A constant in `src/` would be a second source of truth that drifts from the plans, and the one that exists (`DISTRICTS` in `tests/test_pdf_parser.rs`) is a test's assertion, not the service's data. `build_router` passes `state.index.names()`, so what `/docs` offers is what this process can answer.
+
+Only the schema is replaced; the parameter's description and everything else about the operation stay as the macro produced them. The empty-list guard is for a hand-built doc only — `build_index` refuses to start with an empty index — because an `enum` with no values is a parameter no value satisfies.
+
+**The enum documents, it does not validate.** The handler still takes any string and answers 404 for a name that is in no plan; `AppError` is unchanged. Swagger UI restricts its own form, nothing more.
+
+Nothing here discloses the data source: district names are the answer's subject, not the origin of it.
 
 ## Test Coverage
 

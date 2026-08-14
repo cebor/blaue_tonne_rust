@@ -15,7 +15,7 @@ Deliberate gaps:
 |---|---|---|
 | `test_index.rs` | `build_index` / `AppState::build` with `PdfCache::disabled()` | Every download and parse fault: mockito, the size caps, retired plans |
 | `test_cache.rs` | the same function with an enabled cache | The four `build_index` decisions tabulated in the root `CLAUDE.md` |
-| `test_api.rs` | the router over a seeded or fixture-built index | What a client can observe: hit, miss, bad parameter |
+| `test_api.rs` | the router over a seeded or fixture-built index | What a client can observe: hit, miss, bad parameter, and the served `/docs/openapi.json` |
 
 Helpers more than one binary needs — the fixture bytes, `mock_fixture`, `temp_dir`, `state_from_fixture`, `body_to_json`, `get`, `EventRecorder` — live in `tests/common/mod.rs`, which carries a blanket `#![allow(dead_code)]` because each binary uses a different subset.
 
