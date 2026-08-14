@@ -131,6 +131,23 @@ fn test_all_districts_count() {
     assert_eq!(DISTRICTS.len(), 50);
 }
 
+#[test]
+fn test_the_index_holds_the_districts_and_nothing_else() {
+    // The per-district tests only assert that a name is present. Without this
+    // one, rows next to the table — the "Altpapiertonne" heading above the
+    // first district, the address line below the last — index as districts and
+    // the startup log reports more of them than the plan has.
+    let pdf = fixture_pdf();
+    let index = index_districts(&pdf).expect("fixture must index");
+
+    let mut indexed: Vec<&String> = index.keys().collect();
+    indexed.sort();
+    let mut expected: Vec<String> = DISTRICTS.iter().map(|d| normalize_district(d)).collect();
+    expected.sort();
+
+    assert_eq!(indexed, expected.iter().collect::<Vec<_>>());
+}
+
 // --- normalize_district, the rule the index is keyed on ---
 
 #[test]

@@ -68,6 +68,7 @@ pub fn normalize_district(district: &str) -> String {
 /// Returns a map from the normalized district name (see [`normalize_district`])
 /// to its collection dates. First occurrence wins, so pages are read in order.
 ///
+/// An entry is a row without dates of its own, between two rows that have them.
 /// A page carrying no district table contributes nothing, which is why there is
 /// no page selection to configure: the row shape is the filter.
 pub fn index_districts(pdf_bytes: &[u8]) -> Result<HashMap<String, Vec<NaiveDate>>, PlanError> {
@@ -99,22 +100,29 @@ pub fn index_districts(pdf_bytes: &[u8]) -> Result<HashMap<String, Vec<NaiveDate
                 continue;
             }
 
-            let mut dates: Vec<NaiveDate> = Vec::new();
             // Row before the name row: first half of the year.
-            if row_idx > 0
-                && let Some(prev_row) = rows.get(row_idx - 1)
-            {
-                dates.extend(parse_dates_from_row(prev_row));
-            }
+            let before = row_idx
+                .checked_sub(1)
+                .and_then(|i| rows.get(i))
+                .map(|row| parse_dates_from_row(row))
+                .unwrap_or_default();
             // Row after the name row: second half of the year.
-            if let Some(next_row) = rows.get(row_idx + 1) {
-                dates.extend(parse_dates_from_row(next_row));
+            let after = rows
+                .get(row_idx + 1)
+                .map(|row| parse_dates_from_row(row))
+                .unwrap_or_default();
+
+            // An entry is a name row *sandwiched* between two date rows. Dates
+            // on one side only mean the row is a neighbour of the table, not
+            // part of it — the heading above the first district and the address
+            // line below the last one both sit that way.
+            if before.is_empty() || after.is_empty() {
+                continue;
             }
 
-            // A name row without dates around it is not an entry.
-            if !dates.is_empty() {
-                index.entry(name).or_insert(dates);
-            }
+            index
+                .entry(name)
+                .or_insert_with(|| before.into_iter().chain(after).collect());
         }
     }
 

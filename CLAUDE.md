@@ -37,7 +37,11 @@ Row reconstruction in `src/pdf_parser.rs` sorts `pdf_oxide` spans by Y descendin
 
 50 districts are supported (see `DISTRICTS` in `tests/test_pdf_parser.rs`).
 
-`index_districts` reads a whole plan in one pass and returns `district → dates`. It is the only entry point; there is no per-district search function. A row that carries dates itself is skipped as a key (it is a date row, not a name row), and a name row without dates around it is not an entry. First occurrence wins, so pages are read in order.
+`index_districts` reads a whole plan in one pass and returns `district → dates`. It is the only entry point; there is no per-district search function. A row that carries dates itself is skipped as a key (it is a date row, not a name row). First occurrence wins, so pages are read in order.
+
+**An entry is a name row sandwiched between two date rows — dates on one side only are not enough.** The table's neighbours sit exactly that way: the "Altpapiertonne" heading has the first district's date row under it, the company address line has the last district's date row over it. Accepting one side indexed both as districts, so the startup log said `districts=52` for a 50-district plan. `test_the_index_holds_the_districts_and_nothing_else` compares the index's keys against `DISTRICTS` as a set, which the per-district tests do not — they only assert presence.
+
+The cost: a district whose two date rows straddle a page break would be dropped. No plan has ever been laid out that way; each district block is kept together in a column.
 
 ## The index is built at startup
 
@@ -132,7 +136,7 @@ Which test binary owns which failure mode, the deliberate coverage gaps, and the
 
 ## `plans.yaml`
 
-**A plan is a URL and nothing else** — literally: `plans` deserializes into `Vec<String>`, there is no `Plan` struct, and `build_index` takes `&[String]`. `index_districts` reads every page of the PDF, from `0..doc.page_count()`. There is no page selection to configure, because the row shape already is the filter: a page carrying no district table produces no name row with dates around it and contributes nothing. That also means no config value can fall out of step with a re-paginated PDF.
+**A plan is a URL and nothing else** — literally: `plans` deserializes into `Vec<String>`, there is no `Plan` struct, and `build_index` takes `&[String]`. `index_districts` reads every page of the PDF, from `0..doc.page_count()`. There is no page selection to configure, because the row shape already is the filter: a page carrying no district table produces no name row between two date rows and contributes nothing. That also means no config value can fall out of step with a re-paginated PDF.
 
 `Config` carries `#[serde(deny_unknown_fields)]`, so a top-level key the service does not read aborts startup instead of being silently ignored, and a plan written as a mapping (`- url: …`) fails on the type rather than being half-read. `test_load_plans_rejects_a_top_level_key_the_service_does_not_read` and `test_load_plans_rejects_a_plan_written_as_a_mapping` pin both.
 
