@@ -34,6 +34,7 @@ pub fn build_router(state: AppState, forwarded_allow_ips: Vec<IpNet>) -> Router 
                 .url(api_doc_url, ApiDoc::with_districts(state.index.names()))
                 .config(api_doc_config),
         )
+        .route("/", get(handlers::redirect_to_docs))
         .route("/lk_rosenheim", get(handlers::lk_rosenheim_handler))
         // Last `.layer()` = outermost = runs first. ip_middleware has to run
         // before trace_layer so the span already has client_ip.

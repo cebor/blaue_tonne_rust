@@ -1,6 +1,7 @@
 use axum::{
     Json,
     extract::{Query, State, rejection::QueryRejection},
+    response::Redirect,
 };
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,11 @@ pub async fn health_check() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "healthy".to_string(),
     })
+}
+
+/// Sends the service root to the Swagger UI, the only human-facing page here.
+pub async fn redirect_to_docs() -> Redirect {
+    Redirect::temporary("/docs")
 }
 
 fn dates_to_iso(dates: &[NaiveDate]) -> Vec<String> {

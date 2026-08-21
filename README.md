@@ -93,6 +93,7 @@ Returns `{"status": "healthy"}`.
 
 ### API Docs
 ```bash
+GET /                       # 307 redirect to /docs
 GET /docs                   # Swagger UI
 GET /docs/openapi.json      # OpenAPI JSON spec
 ```

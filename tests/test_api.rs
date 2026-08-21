@@ -56,6 +56,15 @@ async fn test_health_check() {
     assert_eq!(body["status"], "healthy");
 }
 
+// --- GET / ---
+
+#[tokio::test]
+async fn test_root_redirects_to_the_docs() {
+    let response = get(state_from_fixture(), "/").await;
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(response.headers()["location"], "/docs");
+}
+
 // --- GET /lk_rosenheim ---
 
 #[tokio::test]
