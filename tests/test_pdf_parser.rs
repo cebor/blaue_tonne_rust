@@ -3,6 +3,9 @@ use std::path::PathBuf;
 use blaue_tonne_rust::errors::PlanError;
 use blaue_tonne_rust::pdf_parser::{index_districts, normalize_district};
 
+mod common;
+use common::blank_pdf_bytes;
+
 fn fixture_pdf() -> Vec<u8> {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lk_rosenheim_2026.pdf");
@@ -182,4 +185,14 @@ fn test_index_keys_are_already_normalized() {
         assert_eq!(&normalize_district(key), key, "index key {key:?}");
     }
     assert!(index.contains_key(&normalize_district("Bad Aibling")));
+}
+
+// A readable PDF without a district table is not an error: it contributes
+// nothing. `test_a_plan_without_districts_refuses_to_start` in `test_index.rs`
+// depends on both halves of that — this test names the cause if `blank_pdf_bytes`
+// ever stops parsing.
+#[test]
+fn test_a_pdf_without_a_district_table_indexes_nothing() {
+    let index = index_districts(&blank_pdf_bytes()).expect("a blank PDF must still parse");
+    assert!(index.is_empty(), "expected no districts, got: {index:?}");
 }

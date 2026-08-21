@@ -10,7 +10,7 @@ use blaue_tonne_rust::index::build_index;
 use blaue_tonne_rust::pdf_parser::index_districts;
 
 mod common;
-use common::{EventRecorder, body_to_json, fixture_pdf_bytes, get, mock_fixture};
+use common::{EventRecorder, blank_pdf_bytes, body_to_json, fixture_pdf_bytes, get, mock_fixture};
 
 // --- Happy path ---
 
@@ -284,6 +284,31 @@ async fn test_no_plans_refuses_to_start() {
     assert!(
         matches!(result, Err(PlanError::Failed(ref d)) if d.contains("none of the 0")),
         "an empty plans.yaml must not start, got: {result:?}"
+    );
+}
+
+// ...and so is a plan that reads fine but holds no table: a re-rendered PDF the
+// row shape no longer matches would otherwise start a process that answers 404
+// for every name in the county.
+#[tokio::test]
+async fn test_a_plan_without_districts_refuses_to_start() {
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/blank.pdf")
+        .with_status(200)
+        .with_header("content-type", "application/pdf")
+        .with_body(blank_pdf_bytes())
+        .create_async()
+        .await;
+
+    let result = build_index(
+        &[format!("{}/blank.pdf", server.url())],
+        &PdfCache::disabled(),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(PlanError::Failed(ref d)) if d.contains("no districts")),
+        "a plan without a district table must not start, got: {result:?}"
     );
 }
 

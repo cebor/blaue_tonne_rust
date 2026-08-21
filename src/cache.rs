@@ -150,13 +150,10 @@ fn cache_file_name(url: &str) -> String {
         let _ = write!(name, "{byte:02x}");
     }
 
-    let tail: String = url
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(url)
-        .rsplit('/')
-        .next()
-        .unwrap_or_default()
+    let path = url.split_once(['?', '#']).map_or(url, |(before, _)| before);
+    let tail: String = path
+        .rsplit_once('/')
+        .map_or(path, |(_, file_name)| file_name)
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
         .take(64)

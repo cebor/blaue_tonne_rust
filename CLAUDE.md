@@ -53,11 +53,14 @@ The cost: a district whose two date rows straddle a page break would be dropped.
 
 **A plan that can be read from neither the source nor the cache is fatal.** There is no second attempt at request time, so starting anyway would serve a district short of its dates for the lifetime of the process. `main` logs the fault at ERROR and exits 1.
 
-Loading `plans.yaml` fails the same way, through the same `match`-log-exit shape rather than an `expect`, so the detail (a path, a URL, a serde message) goes through tracing like every other startup fault.
+Loading `plans.yaml` fails the same way, and so do the bind and the server itself: every startup fault takes the same `match`-log-exit shape rather than an `expect`, so the detail (a path, a URL, a serde message, an address already in use) goes through tracing like every other one.
 
 **The one exception is an upstream 404**, which means the plan is gone — expected at the turn of the year, when last year's PDF goes offline while still listed in `plans.yaml`. It is skipped with a WARN naming the URL, once, at startup.
 
-**`plans_indexed == 0` is fatal too.** An empty index would answer "District not found" for every name in the county (`test_only_plan_retired_refuses_to_start`, `test_no_plans_refuses_to_start`). A plan served from the cache counts as indexed.
+**An empty index is fatal too**, because it would answer "District not found" for every name in the county. Two guards, because two different faults produce it and the message is what tells an operator which:
+
+- `plans_indexed == 0` — nothing was read at all: every plan retired, or none configured (`test_only_plan_retired_refuses_to_start`, `test_no_plans_refuses_to_start`). A plan served from the cache counts as indexed.
+- `index.is_empty()` — plans were read and carried no districts. `index_districts` returns an empty map, not an error, for a PDF it can parse whose rows do not have the table's shape, so a re-rendered plan would otherwise start a process that answers nothing (`test_a_plan_without_districts_refuses_to_start`, on the minimal PDF `common::blank_pdf_bytes` builds; `test_a_pdf_without_a_district_table_indexes_nothing` pins that those bytes really do parse).
 
 ## The plan PDFs are cached on disk
 

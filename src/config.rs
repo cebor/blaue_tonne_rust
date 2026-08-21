@@ -1,7 +1,7 @@
 use ipnet::IpNet;
 use serde::Deserialize;
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -83,6 +83,26 @@ pub fn parse_forwarded_allow_ips(raw: &str) -> Vec<IpNet> {
                 .ok()
         })
         .collect()
+}
+
+/// The URL the `healthcheck` subcommand probes, derived from `BIND_ADDR`.
+///
+/// An unspecified bind address (`0.0.0.0`, `[::]`) is not an address to connect
+/// to, so it becomes the matching loopback; `SocketAddr`'s `Display` brackets
+/// IPv6. Anything that is not a socket address — a hostname — is used as given.
+pub fn healthcheck_url(bind_addr: &str) -> String {
+    let host = match bind_addr.parse::<SocketAddr>() {
+        Ok(addr) if addr.ip().is_unspecified() => {
+            let loopback: IpAddr = match addr.ip() {
+                IpAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+                IpAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+            };
+            SocketAddr::new(loopback, addr.port()).to_string()
+        }
+        _ => bind_addr.to_string(),
+    };
+
+    format!("http://{host}/health")
 }
 
 /// How long a cached plan PDF counts as fresh when `PDF_CACHE_TTL` is unset.

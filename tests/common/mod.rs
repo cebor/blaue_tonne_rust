@@ -49,6 +49,38 @@ pub fn fixture_pdf_bytes() -> Bytes {
     Bytes::from(std::fs::read(&path).expect("fixture PDF not found"))
 }
 
+/// A minimal, valid one-page PDF: it parses, and carries no district table.
+///
+/// Built here rather than committed as a fixture — the xref offsets are computed
+/// while the objects are assembled, so there is nothing to keep in sync.
+pub fn blank_pdf_bytes() -> Bytes {
+    const OBJECTS: [&str; 3] = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
+    ];
+
+    let mut pdf = String::from("%PDF-1.4\n");
+    let mut offsets = Vec::with_capacity(OBJECTS.len());
+
+    for (i, body) in OBJECTS.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.push_str(&format!("{} 0 obj\n{body}\nendobj\n", i + 1));
+    }
+
+    let xref_offset = pdf.len();
+    let size = OBJECTS.len() + 1;
+    pdf.push_str(&format!("xref\n0 {size}\n0000000000 65535 f \n"));
+    for offset in offsets {
+        pdf.push_str(&format!("{offset:010} 00000 n \n"));
+    }
+    pdf.push_str(&format!(
+        "trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
+    ));
+
+    Bytes::from(pdf)
+}
+
 /// The index the startup path would produce for the fixture plan, without going
 /// through the network.
 pub fn fixture_index() -> DistrictIndex {

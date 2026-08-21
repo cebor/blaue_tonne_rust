@@ -21,7 +21,7 @@ The distroless runtime has no shell/curl, no `tini`, and no manual user (the `:n
 
 The binary runs as PID 1 and handles SIGINT/SIGTERM itself via `axum::serve(...).with_graceful_shutdown(shutdown_signal())` (`shutdown_signal` in `src/main.rs`) — without that an unhandled signal would be ignored by PID 1, so ctrl+c / `docker stop` wouldn't work.
 
-Health checks use the binary's own `healthcheck` subcommand (`blaue_tonne_rust healthcheck` → GET `/health`, exit 0/1) since curl isn't available.
+Health checks use the binary's own `healthcheck` subcommand (`blaue_tonne_rust healthcheck` → GET `/health`, exit 0/1) since curl isn't available. It probes `config::healthcheck_url(BIND_ADDR)`, which turns an unspecified bind address (`0.0.0.0`, `[::]`) into the matching loopback and leaves anything else — including a hostname — as given. Its own 3 s timeout is shorter than `HEALTHCHECK --timeout=5s`, so a hung probe exits 1 instead of being killed.
 
 ## `/cache` — the only writable directory
 

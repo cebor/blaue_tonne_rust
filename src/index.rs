@@ -197,6 +197,14 @@ pub async fn build_index(
         )));
     }
 
+    // Read, but nothing in them: the table's layout changed, or the URL serves a
+    // different document now. Same consequence, hence its own message.
+    if index.is_empty() {
+        return Err(PlanError::failed(format!(
+            "the {plans_indexed} plan(s) read carried no districts"
+        )));
+    }
+
     Ok(index)
 }
 

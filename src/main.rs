@@ -1,10 +1,11 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use blaue_tonne_rust::AppState;
 use blaue_tonne_rust::build_router;
 use blaue_tonne_rust::cache::PdfCache;
-use blaue_tonne_rust::config::{load_plans, parse_forwarded_allow_ips};
+use blaue_tonne_rust::config::{healthcheck_url, load_plans, parse_forwarded_allow_ips};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -14,18 +15,29 @@ fn bind_addr() -> String {
     std::env::var("BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string())
 }
 
+/// Shorter than the Dockerfile's `HEALTHCHECK --timeout`, so a probe that hangs
+/// ends as this process's exit code rather than as a kill.
+const HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// `blaue_tonne_rust healthcheck` performs a GET on /health and exits with
 /// code 0 (healthy) or 1. Used by the Docker HEALTHCHECK, because the distroless
 /// runtime image has neither a shell nor curl.
 async fn run_healthcheck() -> ! {
-    let url = format!(
-        "http://{}/health",
-        bind_addr().replace("0.0.0.0", "127.0.0.1")
-    );
-    let ok = reqwest::get(&url)
-        .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false);
+    let url = healthcheck_url(&bind_addr());
+
+    let ok = match reqwest::Client::builder()
+        .timeout(HEALTHCHECK_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client
+            .get(&url)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+
     std::process::exit(if ok { 0 } else { 1 });
 }
 
@@ -94,20 +106,27 @@ async fn main() {
     let app = build_router(state, forwarded_allow_ips);
 
     let bind_addr = bind_addr();
-    let listener = tokio::net::TcpListener::bind(&bind_addr)
-        .await
-        .expect("failed to bind");
+    let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            error!(addr = %bind_addr, error = %e, "failed to bind, refusing to start");
+            std::process::exit(1);
+        }
+    };
 
     info!("Listening on {bind_addr}");
     info!("API docs available at http://{bind_addr}/docs");
 
-    axum::serve(
+    if let Err(e) = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await
-    .expect("server error");
+    {
+        error!(error = %e, "server error");
+        std::process::exit(1);
+    }
 }
 
 /// Resolves on SIGINT (ctrl+c) or SIGTERM (`docker stop` / Kubernetes), letting

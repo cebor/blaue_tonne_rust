@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use blaue_tonne_rust::config::{
-    DEFAULT_CACHE_TTL, cache_dir_from, load_plans, parse_cache_ttl, parse_forwarded_allow_ips,
+    DEFAULT_CACHE_TTL, cache_dir_from, healthcheck_url, load_plans, parse_cache_ttl,
+    parse_forwarded_allow_ips,
 };
 
 // --- Helpers ---
@@ -208,6 +209,35 @@ fn test_parse_allow_ips_ipv6() {
 }
 
 // --- parse_cache_ttl ---
+// --- The healthcheck URL ---
+
+#[test]
+fn test_healthcheck_url_turns_an_unspecified_bind_into_loopback() {
+    assert_eq!(
+        healthcheck_url("0.0.0.0:8080"),
+        "http://127.0.0.1:8080/health"
+    );
+    // Display brackets the IPv6 host, which a `replace` on the string would not.
+    assert_eq!(healthcheck_url("[::]:8080"), "http://[::1]:8080/health");
+}
+
+#[test]
+fn test_healthcheck_url_keeps_an_address_that_can_be_connected_to() {
+    assert_eq!(
+        healthcheck_url("127.0.0.1:9090"),
+        "http://127.0.0.1:9090/health"
+    );
+    assert_eq!(healthcheck_url("[::1]:9090"), "http://[::1]:9090/health");
+}
+
+#[test]
+fn test_healthcheck_url_passes_a_hostname_through() {
+    assert_eq!(
+        healthcheck_url("localhost:8080"),
+        "http://localhost:8080/health"
+    );
+}
+
 #[test]
 fn test_parse_cache_ttl_accepts_every_suffix() {
     assert_eq!(parse_cache_ttl("45s"), Duration::from_secs(45));
