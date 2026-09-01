@@ -37,6 +37,11 @@ variables:
 build:
   image: docker:latest
   stage: build
+  variables:
+    # BuildKit attaches a provenance attestation by default, which turns the
+    # build result into an OCI index the registry rejects on push
+    # ("blob unknown to registry").
+    BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
   # services:
   #   - docker:dind
   before_script:
