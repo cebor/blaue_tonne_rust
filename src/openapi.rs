@@ -1,6 +1,7 @@
 //! OpenAPI specification (served as Swagger UI under `/docs`).
 
 use utoipa::OpenApi;
+use utoipa::openapi::RefOr;
 use utoipa::openapi::schema::{ObjectBuilder, Type};
 
 use crate::{errors, handlers};
@@ -59,7 +60,12 @@ impl ApiDoc {
             .get_mut("/lk_rosenheim")
             .and_then(|item| item.get.as_mut())
             .and_then(|operation| operation.parameters.as_mut())
-            .and_then(|parameters| parameters.iter_mut().find(|p| p.name == "district"))
+            .and_then(|parameters| {
+                parameters.iter_mut().find_map(|p| match p {
+                    RefOr::T(p) if p.name == "district" => Some(p),
+                    _ => None,
+                })
+            })
         {
             parameter.schema = Some(
                 ObjectBuilder::new()
